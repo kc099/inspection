@@ -6,6 +6,7 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 
@@ -34,7 +35,7 @@ public class MaskRCNNDetector : IDisposable
 {
     private readonly InferenceSession _session;
     private readonly string _inputName;
-    private readonly float[] _inputBuffer;
+    private readonly ThreadLocal<float[]> _inputBuffer;
     private const int InputSize = 720;
     private const int BufferLength = 1 * 3 * InputSize * InputSize;
 
@@ -81,7 +82,7 @@ public class MaskRCNNDetector : IDisposable
         _session = new InferenceSession(modelPath, options);
         _inputName = _session.InputMetadata.Keys.First();
 
-        _inputBuffer = new float[BufferLength];
+        _inputBuffer = new ThreadLocal<float[]>(() => new float[BufferLength]);
 
         if (ActiveProvider.StartsWith("CUDA"))
         {
@@ -91,7 +92,8 @@ public class MaskRCNNDetector : IDisposable
 
     private void WarmUp(IProgress<string>? progress)
     {
-        var tensor = new DenseTensor<float>(_inputBuffer, [1, 3, InputSize, InputSize]);
+        var buffer = _inputBuffer.Value!;
+        var tensor = new DenseTensor<float>(buffer, [1, 3, InputSize, InputSize]);
         var inputs = new List<NamedOnnxValue>
         {
             NamedOnnxValue.CreateFromTensor(_inputName, tensor)
@@ -143,8 +145,9 @@ public class MaskRCNNDetector : IDisposable
     public List<Detection> Detect(Bitmap image, float scoreThreshold, out long tensorMs, out long inferenceMs)
     {
         var sw = Stopwatch.StartNew();
-        FillInputBuffer(image);
-        var tensor = new DenseTensor<float>(_inputBuffer, [1, 3, image.Height, image.Width]);
+        var buffer = _inputBuffer.Value!;
+        FillInputBuffer(image, buffer);
+        var tensor = new DenseTensor<float>(buffer, [1, 3, image.Height, image.Width]);
         tensorMs = sw.ElapsedMilliseconds;
 
         var inputs = new List<NamedOnnxValue>
@@ -208,9 +211,9 @@ public class MaskRCNNDetector : IDisposable
     }
 
     /// <summary>
-    /// Fill pre-allocated buffer from Bitmap. BGR ? RGB planar, [0..1].
+    /// Fill buffer from Bitmap. BGR ? RGB planar, [0..1]. Thread-safe (uses caller's buffer).
     /// </summary>
-    private void FillInputBuffer(Bitmap bmp)
+    private static void FillInputBuffer(Bitmap bmp, float[] buffer)
     {
         int w = bmp.Width;
         int h = bmp.Height;
@@ -231,9 +234,9 @@ public class MaskRCNNDetector : IDisposable
                 for (int x = 0; x < w; x++)
                 {
                     int idx = rowOffset + x * 3;
-                    _inputBuffer[yOffset + x] = pixels[idx + 2] / 255f;             // R
-                    _inputBuffer[planeSize + yOffset + x] = pixels[idx + 1] / 255f;  // G
-                    _inputBuffer[planeSize * 2 + yOffset + x] = pixels[idx] / 255f;  // B
+                    buffer[yOffset + x] = pixels[idx + 2] / 255f;             // R
+                    buffer[planeSize + yOffset + x] = pixels[idx + 1] / 255f;  // G
+                    buffer[planeSize * 2 + yOffset + x] = pixels[idx] / 255f;  // B
                 }
             }
         }
@@ -246,5 +249,6 @@ public class MaskRCNNDetector : IDisposable
     public void Dispose()
     {
         _session?.Dispose();
+        _inputBuffer?.Dispose();
     }
 }

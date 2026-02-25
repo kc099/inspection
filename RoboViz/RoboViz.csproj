@@ -32,4 +32,10 @@
     </None>
   </ItemGroup>
 
+  <ItemGroup>
+    <Resource Include="Fonts\Orbitron-VariableFont.ttf" />
+    <Resource Include="Fonts\ShareTechMono-Regular.ttf" />
+    <Resource Include="Fonts\Montserrat-VariableFont.ttf" />
+  </ItemGroup>
+
 </Project>

@@ -1,9 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Media;
 using Microsoft.Win32;
 
@@ -24,6 +26,10 @@ namespace RoboViz
     {
         private InspectionService? _service;
         private Bitmap? _currentImage;
+
+        private System.Windows.Controls.Image[] _imageDisplays = null!;
+        private TextBlock[] _verdictLabels = null!;
+        private const int FrameCount = 4;
 
         private static readonly SolidColorBrush PassGreen = new(System.Windows.Media.Color.FromRgb(76, 175, 80));
         private static readonly SolidColorBrush FailRed = new(System.Windows.Media.Color.FromRgb(244, 67, 54));
@@ -46,6 +52,8 @@ namespace RoboViz
         public MainWindow()
         {
             InitializeComponent();
+            _imageDisplays = [ImageDisplay0, ImageDisplay1, ImageDisplay2, ImageDisplay3];
+            _verdictLabels = [VerdictLabel0, VerdictLabel1, VerdictLabel2, VerdictLabel3];
         }
 
         private async void Window_Loaded(object sender, RoutedEventArgs e)
@@ -89,10 +97,23 @@ namespace RoboViz
             }
         }
 
-        private void Model_Checked(object sender, RoutedEventArgs e)
+        private void Model1_Click(object sender, RoutedEventArgs e)
+        {
+            BtnModel2.IsChecked = false;
+            BtnModel1.IsChecked = true;
+            SwitchModel("Model 1");
+        }
+
+        private void Model2_Click(object sender, RoutedEventArgs e)
+        {
+            BtnModel1.IsChecked = false;
+            BtnModel2.IsChecked = true;
+            SwitchModel("Model 2");
+        }
+
+        private void SwitchModel(string model)
         {
             if (_service == null) return;
-            string model = RbModel1.IsChecked == true ? "Model 1" : "Model 2";
             _service.SwitchModel(model);
             StatusText.Text = $"Model: ready  [{_service.ActiveProvider}]  ({_service.CurrentModel})";
             PopulateMetricsTable();
@@ -159,7 +180,7 @@ namespace RoboViz
             var dlg = new OpenFileDialog
             {
                 Filter = "BMP Images|*.bmp|All Images|*.bmp;*.jpg;*.jpeg;*.png;*.tiff|All Files|*.*",
-                Title = "Select O-Ring Image (2448×2048)"
+                Title = "Select Washer Image"
             };
 
             if (dlg.ShowDialog() == true)
@@ -167,17 +188,21 @@ namespace RoboViz
                 _currentImage?.Dispose();
                 _currentImage = new Bitmap(dlg.FileName);
 
-                ImageDisplay.Source = InspectionService.BitmapToBitmapSource(_currentImage);
+                var source = InspectionService.BitmapToBitmapSource(_currentImage);
+                foreach (var img in _imageDisplays)
+                    img.Source = source;
 
                 BtnAnalyze.IsEnabled = _service != null;
-                VerdictText.Text = "AWAITING";
+                VerdictText.Text = "";
                 VerdictBorder.Background = VerdictNeutralBg;
                 CycleTimeText.Text = "";
                 FailReasonsText.Text = "";
-                DefectInfoText.Text = "—";
+                DefectInfoText.Text = "---";
+                foreach (var lbl in _verdictLabels)
+                    lbl.Text = "";
                 PopulateMetricsTable();
                 DetailsText.Text = $"Loaded: {Path.GetFileName(dlg.FileName)}  " +
-                                   $"({_currentImage.Width}×{_currentImage.Height})";
+                                   $"({_currentImage.Width}x{_currentImage.Height})  x{FrameCount} frames";
             }
         }
 
@@ -186,17 +211,55 @@ namespace RoboViz
             if (_currentImage == null || _service == null) return;
 
             BtnAnalyze.IsEnabled = false;
-            StatusText.Text = "Analyzing...";
+            StatusText.Text = "Analyzing 4 frames...";
 
-            InspectionResult? result = null;
+            InspectionResult[] results = new InspectionResult[FrameCount];
+            long batchMs = 0;
+
             await Task.Run(() =>
             {
-                result = _service.Inspect(_currentImage);
+                // Create copies on the main task thread (Bitmap ctor is not concurrent-safe on same source)
+                var copies = new Bitmap[FrameCount];
+                for (int i = 0; i < FrameCount; i++)
+                    copies[i] = new Bitmap(_currentImage);
+
+                var batchSw = Stopwatch.StartNew();
+                Parallel.For(0, FrameCount, i =>
+                {
+                    results[i] = _service.Inspect(copies[i]);
+                });
+                batchMs = batchSw.ElapsedMilliseconds;
+
+                // Only dispose copies not retained as overlay images
+                for (int i = 0; i < FrameCount; i++)
+                {
+                    if (!ReferenceEquals(copies[i], results[i].OverlayImage))
+                        copies[i].Dispose();
+                }
             });
 
-            if (result == null) return;
+            // --- Update each frame's overlay + verdict label ---
+            var verdictColors = new Dictionary<string, SolidColorBrush>
+            {
+                ["PASS"] = PassGreen,
+                ["REWORK"] = VerdictReworkBg,
+                ["REJECT"] = FailRed,
+                ["ERROR"] = VerdictErrorBg,
+            };
 
-            // --- Verdict banner ---
+            for (int i = 0; i < FrameCount; i++)
+            {
+                var r = results[i];
+                if (r.OverlayImage != null)
+                    _imageDisplays[i].Source = InspectionService.BitmapToBitmapSource(r.OverlayImage);
+
+                _verdictLabels[i].Text = r.Verdict;
+                _verdictLabels[i].Foreground = verdictColors.GetValueOrDefault(r.Verdict, NormalGray);
+            }
+
+            // --- Use frame 1 result for the detail panels ---
+            var result = results[0];
+
             VerdictText.Text = result.Verdict;
             VerdictBorder.Background = result.Verdict switch
             {
@@ -207,7 +270,6 @@ namespace RoboViz
                 _ => VerdictNeutralBg,
             };
 
-            // --- Fail reasons ---
             if (result.ErrorMessage != null)
                 FailReasonsText.Text = result.ErrorMessage;
             else if (result.FailReasons.Count > 0)
@@ -215,10 +277,8 @@ namespace RoboViz
             else
                 FailReasonsText.Text = "";
 
-            // --- Metric table ---
             PopulateMetricsTable(result.MetricResults);
 
-            // --- Defect detection info ---
             if (result.Verdict is "REWORK")
             {
                 DefectInfoText.Text = "Skipped (geometric rework)";
@@ -244,17 +304,29 @@ namespace RoboViz
                 DefectInfoText.Foreground = PassGreen;
             }
 
-            // --- Image overlay ---
-            if (result.OverlayImage != null)
-                ImageDisplay.Source = InspectionService.BitmapToBitmapSource(result.OverlayImage);
+            // --- Batch timing summary ---
+            long totalGeo = 0, totalPrep = 0, totalTensor = 0, totalInf = 0, totalOverlay = 0;
+            for (int i = 0; i < FrameCount; i++)
+            {
+                totalGeo += results[i].GeoMs;
+                totalPrep += results[i].PrepMs;
+                totalTensor += results[i].TensorMs;
+                totalInf += results[i].InferenceMs;
+                totalOverlay += results[i].OverlayMs;
+            }
 
-            // --- Timing ---
-            CycleTimeText.Text = $"Total: {result.TotalMs} ms  |  " +
-                                 $"Geo: {result.GeoMs} ms  |  " +
-                                 $"Prep: {result.PrepMs} ms  |  " +
-                                 $"Tensor: {result.TensorMs} ms  |  " +
-                                 $"Inference: {result.InferenceMs} ms  |  " +
-                                 $"Overlay: {result.OverlayMs} ms";
+            CycleTimeText.Text =
+                $"BATCH ({FrameCount} frames): {batchMs} ms total  |  " +
+                $"Avg: {batchMs / FrameCount} ms/frame\n" +
+                $"Per-frame avg:  Geo: {totalGeo / FrameCount} ms  |  " +
+                $"Prep: {totalPrep / FrameCount} ms  |  " +
+                $"Tensor: {totalTensor / FrameCount} ms  |  " +
+                $"Inference: {totalInf / FrameCount} ms  |  " +
+                $"Overlay: {totalOverlay / FrameCount} ms\n" +
+                $"CAM 1: {results[0].TotalMs} ms  |  " +
+                $"CAM 2: {results[1].TotalMs} ms  |  " +
+                $"CAM 3: {results[2].TotalMs} ms  |  " +
+                $"CAM 4: {results[3].TotalMs} ms";
 
             StatusText.Text = $"Model: ready  [{_service!.ActiveProvider}]  ({_service.CurrentModel})";
             BtnAnalyze.IsEnabled = true;
