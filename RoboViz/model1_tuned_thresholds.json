@@ -1,0 +1,92 @@
+{
+  "outer_radius": {
+    "lo": 591.0337,
+    "hi": 615.522,
+    "tolerance_pct": 1.75
+  },
+  "inner_radius": {
+    "lo": 317.6542,
+    "hi": 331.3915,
+    "tolerance_pct": 0.0
+  },
+  "circularity_outer": {
+    "lo": 0.4558,
+    "hi": 9999.0,
+    "tolerance_pct": 40.03
+  },
+  "circularity_inner": {
+    "lo": 0.735,
+    "hi": 9999.0,
+    "tolerance_pct": 3.43
+  },
+  "outer_radial_std": {
+    "lo": 0.0,
+    "hi": 44.8363,
+    "tolerance_pct": 253.78
+  },
+  "inner_radial_std": {
+    "lo": 0.0,
+    "hi": 7.5347,
+    "tolerance_pct": 96.35
+  },
+  "ring_thickness": {
+    "lo": 268.5609,
+    "hi": 290.3557,
+    "tolerance_pct": 2.77
+  },
+  "mean_thickness": {
+    "lo": 217.7171,
+    "hi": 306.4355,
+    "tolerance_pct": 10.04
+  },
+  "min_thickness": {
+    "lo": 0.0,
+    "hi": 9999.0,
+    "tolerance_pct": 0.0
+  },
+  "max_thickness": {
+    "lo": 0.0,
+    "hi": 325.0326,
+    "tolerance_pct": 2.87
+  },
+  "thickness_range": {
+    "lo": 0.0,
+    "hi": 411.2596,
+    "tolerance_pct": 0.0
+  },
+  "thickness_ratio": {
+    "lo": 0.0,
+    "hi": 340.7829,
+    "tolerance_pct": 0.0
+  },
+  "thickness_std": {
+    "lo": 0.0,
+    "hi": 87.0309,
+    "tolerance_pct": 2.44
+  },
+  "thickness_cv": {
+    "lo": 0.0,
+    "hi": 39.9757,
+    "tolerance_pct": 19.01
+  },
+  "center_dist": {
+    "lo": 0.0,
+    "hi": 25.4657,
+    "tolerance_pct": 176.23
+  },
+  "eccentricity_pct": {
+    "lo": 0.0,
+    "hi": 5.5827,
+    "tolerance_pct": 179.6
+  },
+  "annular_area_k": {
+    "lo": 760.1239,
+    "hi": 861.5247,
+    "tolerance_pct": 3.9
+  },
+  "edge_clearance": {
+    "lo": 0.0,
+    "hi": 9999.0,
+    "tolerance_pct": 0.0
+  }
+}
