@@ -64,9 +64,9 @@ public class MaskRCNNDetector : IDisposable
                 {
                     ["device_id"] = "0",
                     ["cudnn_conv_algo_search"] = "EXHAUSTIVE",
-                    ["cudnn_conv_use_max_workspace"] = "1",
+                    ["cudnn_conv_use_max_workspace"] = "0",
                     ["do_copy_in_default_stream"] = "1",
-                    ["arena_extend_strategy"] = "kNextPowerOfTwo",
+                    ["arena_extend_strategy"] = "kSameAsRequested",
                 });
                 options.AppendExecutionProvider_CUDA(cudaOptions);
                 ActiveProvider = "CUDA (GPU)";
@@ -110,7 +110,7 @@ public class MaskRCNNDetector : IDisposable
     /// Prepend pip-installed NVIDIA library paths (cuDNN 9, cuBLAS 12) to PATH
     /// so the native ORT CUDA provider can find them at runtime.
     /// </summary>
-    private static void EnsureNvidiaLibsOnPath()
+    public static void EnsureNvidiaLibsOnPath()
     {
         string sitePackages = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),

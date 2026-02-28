@@ -77,7 +77,6 @@
             </Setter>
         </Style>
 
-        <!-- Image frame style -->
         <Style x:Key="ImageFrame" TargetType="Border">
             <Setter Property="Background" Value="#FF18181E"/>
             <Setter Property="CornerRadius" Value="10"/>
@@ -88,222 +87,220 @@
     </Window.Resources>
 
     <Grid Margin="16">
-        <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="65*"/>
-            <ColumnDefinition Width="35*" MinWidth="480"/>
-        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
 
-        <!-- Left: 2x2 Image Grid -->
-        <Grid Grid.Column="0" Margin="0,0,16,0">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="*"/>
-                <RowDefinition Height="*"/>
-            </Grid.RowDefinitions>
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="*"/>
-            </Grid.ColumnDefinitions>
-
-            <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource ImageFrame}">
-                <Grid>
-                    <Image x:Name="ImageDisplay0" Stretch="Uniform" Margin="6"/>
-                    <TextBlock Text="CAM 1" FontFamily="{StaticResource Montserrat}"
-                               FontSize="10" FontWeight="Bold" Foreground="#FF505058"
-                               HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10,8"/>
-                    <TextBlock x:Name="VerdictLabel0" Text=""
-                               FontFamily="{StaticResource Orbitron}"
-                               FontSize="14" FontWeight="Bold" Foreground="White"
-                               HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,8,10,0"
-                               Padding="6,2" />
-                </Grid>
-            </Border>
-
-            <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource ImageFrame}">
-                <Grid>
-                    <Image x:Name="ImageDisplay1" Stretch="Uniform" Margin="6"/>
-                    <TextBlock Text="CAM 2" FontFamily="{StaticResource Montserrat}"
-                               FontSize="10" FontWeight="Bold" Foreground="#FF505058"
-                               HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10,8"/>
-                    <TextBlock x:Name="VerdictLabel1" Text=""
-                               FontFamily="{StaticResource Orbitron}"
-                               FontSize="14" FontWeight="Bold" Foreground="White"
-                               HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,8,10,0"
-                               Padding="6,2" />
-                </Grid>
-            </Border>
-
-            <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource ImageFrame}">
-                <Grid>
-                    <Image x:Name="ImageDisplay2" Stretch="Uniform" Margin="6"/>
-                    <TextBlock Text="CAM 3" FontFamily="{StaticResource Montserrat}"
-                               FontSize="10" FontWeight="Bold" Foreground="#FF505058"
-                               HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10,8"/>
-                    <TextBlock x:Name="VerdictLabel2" Text=""
-                               FontFamily="{StaticResource Orbitron}"
-                               FontSize="14" FontWeight="Bold" Foreground="White"
-                               HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,8,10,0"
-                               Padding="6,2" />
-                </Grid>
-            </Border>
-
-            <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource ImageFrame}">
-                <Grid>
-                    <Image x:Name="ImageDisplay3" Stretch="Uniform" Margin="6"/>
-                    <TextBlock Text="CAM 4" FontFamily="{StaticResource Montserrat}"
-                               FontSize="10" FontWeight="Bold" Foreground="#FF505058"
-                               HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10,8"/>
-                    <TextBlock x:Name="VerdictLabel3" Text=""
-                               FontFamily="{StaticResource Orbitron}"
-                               FontSize="14" FontWeight="Bold" Foreground="White"
-                               HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,8,10,0"
-                               Padding="6,2" />
-                </Grid>
-            </Border>
+        <!-- Top Header Bar spanning full width -->
+        <Grid Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock Text="WASHER DIMENSION ANALYZER"
+                       FontFamily="{StaticResource Orbitron}" FontSize="24" FontWeight="Bold"
+                       Foreground="#FF42A5F5" HorizontalAlignment="Center"
+                       VerticalAlignment="Center"/>
+            <TextBlock x:Name="DateTimeText" Text=""
+                       FontFamily="{StaticResource ShareTechMono}" FontSize="13"
+                       Foreground="#FF6E6E76" HorizontalAlignment="Right"
+                       VerticalAlignment="Center" Margin="0,0,4,0"/>
         </Grid>
 
-        <!-- Right Panel -->
-        <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
-            <StackPanel>
+        <!-- Main Content -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="65*"/>
+                <ColumnDefinition Width="35*" MinWidth="480"/>
+            </Grid.ColumnDefinitions>
 
-                <TextBlock Text="WASHER INSPECTION SYSTEM"
-                           FontFamily="{StaticResource Orbitron}" FontSize="22" FontWeight="Bold"
-                           Foreground="#FF42A5F5" Margin="0,0,0,4"/>
+            <!-- Left: 2x2 Image Grid -->
+            <Grid Grid.Column="0" Margin="0,0,16,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
 
-                <TextBlock x:Name="StatusText" Text="Model: loading..."
-                           FontFamily="{StaticResource Montserrat}" FontSize="15"
-                           Foreground="#FFC8C8CD" Margin="0,0,0,14"/>
+                <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource ImageFrame}">
+                    <Grid>
+                        <Image x:Name="ImageDisplay0" Stretch="Uniform" Margin="6"/>
+                    <TextBlock Text="CAM 1 [MaskRCNN]" FontFamily="{StaticResource Montserrat}"
+                                   FontSize="10" FontWeight="Bold" Foreground="#FF505058"
+                                   HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10,8"/>
+                        <TextBlock x:Name="VerdictLabel0" Text=""
+                                   FontFamily="{StaticResource Orbitron}"
+                                   FontSize="14" FontWeight="Bold" Foreground="White"
+                                   HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,8,10,0"
+                                   Padding="6,2"/>
+                    </Grid>
+                </Border>
 
-                <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
-                    <Button Content="Load Image" Width="140" Height="44"
-                            Click="LoadImage_Click" Background="#FF2E7D32"
-                            Style="{StaticResource ActionButton}"/>
-                    <Button x:Name="BtnAnalyze" Content="Analyze" Width="140" Height="44"
-                            Click="Analyze_Click" Margin="10,0,0,0" Background="#FF1565C0"
-                            Style="{StaticResource ActionButton}" IsEnabled="False"/>
+                <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource ImageFrame}">
+                    <Grid>
+                        <Image x:Name="ImageDisplay1" Stretch="Uniform" Margin="6"/>
+                    <TextBlock Text="CAM 2 [PatchCore]" FontFamily="{StaticResource Montserrat}"
+                                   FontSize="10" FontWeight="Bold" Foreground="#FF505058"
+                                   HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10,8"/>
+                        <TextBlock x:Name="VerdictLabel1" Text=""
+                                   FontFamily="{StaticResource Orbitron}"
+                                   FontSize="14" FontWeight="Bold" Foreground="White"
+                                   HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,8,10,0"
+                                   Padding="6,2"/>
+                    </Grid>
+                </Border>
 
-                    <Border Margin="20,0,0,0" Background="#FF1C1C24" CornerRadius="8"
-                            BorderBrush="#FF2A2A34" BorderThickness="1" Padding="6,0">
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <TextBlock Text="MODEL" FontFamily="{StaticResource Montserrat}"
-                                       FontSize="11" FontWeight="Bold" Foreground="#FF6E6E76"
-                                       VerticalAlignment="Center" Margin="6,0,10,0"/>
-                            <ToggleButton x:Name="BtnModel1" Content="Model 1"
-                                          Style="{StaticResource ModelToggle}"
-                                          Checked="Model1_Click" Margin="0,4,6,4"/>
-                            <ToggleButton x:Name="BtnModel2" Content="Model 2"
-                                          Style="{StaticResource ModelToggle}" IsChecked="True"
-                                          Checked="Model2_Click" Margin="0,4,6,4"/>
+                <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource ImageFrame}">
+                    <Grid>
+                        <Image x:Name="ImageDisplay2" Stretch="Uniform" Margin="6"/>
+                    <TextBlock Text="CAM 3 [MaskRCNN]" FontFamily="{StaticResource Montserrat}"
+                                   FontSize="10" FontWeight="Bold" Foreground="#FF505058"
+                                   HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10,8"/>
+                        <TextBlock x:Name="VerdictLabel2" Text=""
+                                   FontFamily="{StaticResource Orbitron}"
+                                   FontSize="14" FontWeight="Bold" Foreground="White"
+                                   HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,8,10,0"
+                                   Padding="6,2"/>
+                    </Grid>
+                </Border>
+
+                <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource ImageFrame}">
+                    <Grid>
+                        <Image x:Name="ImageDisplay3" Stretch="Uniform" Margin="6"/>
+                    <TextBlock Text="CAM 4 [PatchCore]" FontFamily="{StaticResource Montserrat}"
+                                   FontSize="10" FontWeight="Bold" Foreground="#FF505058"
+                                   HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10,8"/>
+                        <TextBlock x:Name="VerdictLabel3" Text=""
+                                   FontFamily="{StaticResource Orbitron}"
+                                   FontSize="14" FontWeight="Bold" Foreground="White"
+                                   HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,8,10,0"
+                                   Padding="6,2"/>
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <!-- Right Panel -->
+            <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+
+                    <TextBlock x:Name="StatusText" Text="Model: loading..."
+                               FontFamily="{StaticResource Montserrat}" FontSize="15"
+                               Foreground="#FFC8C8CD" Margin="0,0,0,14"/>
+
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                        <Button Content="Load Image" Width="140" Height="44"
+                                Click="LoadImage_Click" Background="#FF2E7D32"
+                                Style="{StaticResource ActionButton}"/>
+                        <Button x:Name="BtnAnalyze" Content="Analyze" Width="140" Height="44"
+                                Click="Analyze_Click" Margin="10,0,0,0" Background="#FF1565C0"
+                                Style="{StaticResource ActionButton}" IsEnabled="False"/>
+
+                        <Border Margin="20,0,0,0" Background="#FF1C1C24" CornerRadius="8"
+                                BorderBrush="#FF2A2A34" BorderThickness="1" Padding="6,0">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock Text="MODEL" FontFamily="{StaticResource Montserrat}"
+                                           FontSize="11" FontWeight="Bold" Foreground="#FF6E6E76"
+                                           VerticalAlignment="Center" Margin="6,0,10,0"/>
+                                <ToggleButton x:Name="BtnModel1" Content="Model 1"
+                                              Style="{StaticResource ModelToggle}"
+                                              Checked="Model1_Click" Margin="0,4,6,4"/>
+                                <ToggleButton x:Name="BtnModel2" Content="Model 2"
+                                              Style="{StaticResource ModelToggle}" IsChecked="True"
+                                              Checked="Model2_Click" Margin="0,4,6,4"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <!-- Batch Verdict Banner -->
+                    <Border x:Name="VerdictBorder" Height="84" CornerRadius="12"
+                            Background="#FF1C1C24" Margin="0,0,0,14"
+                            BorderBrush="#FF2A2A34" BorderThickness="1">
+                        <TextBlock x:Name="VerdictText" Text=""
+                                   FontFamily="{StaticResource Orbitron}"
+                                   Foreground="White" FontSize="42" FontWeight="Bold"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+
+                    <!-- Geometric Metrics (from CAM 1) -->
+                    <Border Background="#FF18181E" CornerRadius="10" Padding="14,12" Margin="0,0,0,14"
+                            BorderBrush="#FF2A2A34" BorderThickness="1">
+                        <StackPanel>
+                            <TextBlock Text="GEOMETRIC METRICS (CAM 1)"
+                                       FontFamily="{StaticResource Montserrat}"
+                                       Foreground="#FF6E6E76" FontSize="11" FontWeight="Bold"
+                                       Margin="0,0,0,8"/>
+                            <Grid Margin="0,0,0,6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="160"/>
+                                    <ColumnDefinition Width="100"/>
+                                    <ColumnDefinition Width="100"/>
+                                    <ColumnDefinition Width="100"/>
+                                    <ColumnDefinition Width="70"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Metric"
+                                           FontFamily="{StaticResource Montserrat}"
+                                           Foreground="#FF505058" FontSize="11" FontWeight="Bold"/>
+                                <TextBlock Grid.Column="1" Text="Value"
+                                           FontFamily="{StaticResource Montserrat}"
+                                           Foreground="#FF505058" FontSize="11" FontWeight="Bold"/>
+                                <TextBlock Grid.Column="2" Text="Min"
+                                           FontFamily="{StaticResource Montserrat}"
+                                           Foreground="#FF505058" FontSize="11" FontWeight="Bold"/>
+                                <TextBlock Grid.Column="3" Text="Max"
+                                           FontFamily="{StaticResource Montserrat}"
+                                           Foreground="#FF505058" FontSize="11" FontWeight="Bold"/>
+                                <TextBlock Grid.Column="4" Text="Status"
+                                           FontFamily="{StaticResource Montserrat}"
+                                           Foreground="#FF505058" FontSize="11" FontWeight="Bold"/>
+                            </Grid>
+                            <Rectangle Height="1" Fill="#FF2A2A34" Margin="0,0,0,4"/>
+                            <ItemsControl x:Name="MetricsPanel">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,3">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="160"/>
+                                                <ColumnDefinition Width="100"/>
+                                                <ColumnDefinition Width="100"/>
+                                                <ColumnDefinition Width="100"/>
+                                                <ColumnDefinition Width="70"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="{Binding Label}"
+                                                       FontFamily="{StaticResource ShareTechMono}"
+                                                       Foreground="#FFC8C8CD" FontSize="13"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding ValueText}"
+                                                       FontFamily="{StaticResource ShareTechMono}"
+                                                       Foreground="{Binding ValueColor}" FontSize="13"
+                                                       FontWeight="Bold"/>
+                                            <TextBlock Grid.Column="2" Text="{Binding LoText}"
+                                                       FontFamily="{StaticResource ShareTechMono}"
+                                                       Foreground="#FF6E6E76" FontSize="12"/>
+                                            <TextBlock Grid.Column="3" Text="{Binding HiText}"
+                                                       FontFamily="{StaticResource ShareTechMono}"
+                                                       Foreground="#FF6E6E76" FontSize="12"/>
+                                            <TextBlock Grid.Column="4" Text="{Binding StatusText}"
+                                                       FontFamily="{StaticResource ShareTechMono}"
+                                                       Foreground="{Binding StatusColor}" FontSize="13"
+                                                       FontWeight="Bold"/>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
                         </StackPanel>
                     </Border>
+
+                    <!-- Batch Timing -->
+                    <TextBlock x:Name="CycleTimeText" Text=""
+                               FontFamily="{StaticResource ShareTechMono}"
+                               Foreground="#FF64B5F6" FontSize="12" Margin="0,0,0,6"
+                               TextWrapping="Wrap"/>
+
+                    <TextBlock x:Name="DetailsText" Text=""
+                               FontFamily="{StaticResource Montserrat}"
+                               Foreground="#FF505058" FontSize="12"
+                               TextWrapping="Wrap"/>
                 </StackPanel>
-
-                <!-- Batch Verdict Banner -->
-                <Border x:Name="VerdictBorder" Height="84" CornerRadius="12"
-                        Background="#FF1C1C24" Margin="0,0,0,14"
-                        BorderBrush="#FF2A2A34" BorderThickness="1">
-                    <TextBlock x:Name="VerdictText" Text=""
-                               FontFamily="{StaticResource Orbitron}"
-                               Foreground="White" FontSize="42" FontWeight="Bold"
-                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                </Border>
-
-                <TextBlock x:Name="FailReasonsText" Text=""
-                           FontFamily="{StaticResource Montserrat}"
-                           Foreground="#FFEF5350" FontSize="13" Margin="0,0,0,6"
-                           TextWrapping="Wrap"/>
-
-                <!-- Metric Results (from frame 1) -->
-                <Border Background="#FF18181E" CornerRadius="10" Padding="14,12" Margin="0,0,0,14"
-                        BorderBrush="#FF2A2A34" BorderThickness="1">
-                    <StackPanel>
-                        <TextBlock Text="GEOMETRIC METRICS (CAM 1)"
-                                   FontFamily="{StaticResource Montserrat}"
-                                   Foreground="#FF6E6E76" FontSize="11" FontWeight="Bold"
-                                   Margin="0,0,0,8"/>
-                        <Grid Margin="0,0,0,6">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="160"/>
-                                <ColumnDefinition Width="100"/>
-                                <ColumnDefinition Width="100"/>
-                                <ColumnDefinition Width="100"/>
-                                <ColumnDefinition Width="70"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Metric"
-                                       FontFamily="{StaticResource Montserrat}"
-                                       Foreground="#FF505058" FontSize="11" FontWeight="Bold"/>
-                            <TextBlock Grid.Column="1" Text="Value"
-                                       FontFamily="{StaticResource Montserrat}"
-                                       Foreground="#FF505058" FontSize="11" FontWeight="Bold"/>
-                            <TextBlock Grid.Column="2" Text="Min"
-                                       FontFamily="{StaticResource Montserrat}"
-                                       Foreground="#FF505058" FontSize="11" FontWeight="Bold"/>
-                            <TextBlock Grid.Column="3" Text="Max"
-                                       FontFamily="{StaticResource Montserrat}"
-                                       Foreground="#FF505058" FontSize="11" FontWeight="Bold"/>
-                            <TextBlock Grid.Column="4" Text="Status"
-                                       FontFamily="{StaticResource Montserrat}"
-                                       Foreground="#FF505058" FontSize="11" FontWeight="Bold"/>
-                        </Grid>
-                        <Rectangle Height="1" Fill="#FF2A2A34" Margin="0,0,0,4"/>
-                        <ItemsControl x:Name="MetricsPanel">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <Grid Margin="0,3">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="160"/>
-                                            <ColumnDefinition Width="100"/>
-                                            <ColumnDefinition Width="100"/>
-                                            <ColumnDefinition Width="100"/>
-                                            <ColumnDefinition Width="70"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="0" Text="{Binding Label}"
-                                                   FontFamily="{StaticResource ShareTechMono}"
-                                                   Foreground="#FFC8C8CD" FontSize="13"/>
-                                        <TextBlock Grid.Column="1" Text="{Binding ValueText}"
-                                                   FontFamily="{StaticResource ShareTechMono}"
-                                                   Foreground="{Binding ValueColor}" FontSize="13"
-                                                   FontWeight="Bold"/>
-                                        <TextBlock Grid.Column="2" Text="{Binding LoText}"
-                                                   FontFamily="{StaticResource ShareTechMono}"
-                                                   Foreground="#FF6E6E76" FontSize="12"/>
-                                        <TextBlock Grid.Column="3" Text="{Binding HiText}"
-                                                   FontFamily="{StaticResource ShareTechMono}"
-                                                   Foreground="#FF6E6E76" FontSize="12"/>
-                                        <TextBlock Grid.Column="4" Text="{Binding StatusText}"
-                                                   FontFamily="{StaticResource ShareTechMono}"
-                                                   Foreground="{Binding StatusColor}" FontSize="13"
-                                                   FontWeight="Bold"/>
-                                    </Grid>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                    </StackPanel>
-                </Border>
-
-                <Border Background="#FF18181E" CornerRadius="10" Padding="14,12" Margin="0,0,0,14"
-                        BorderBrush="#FF2A2A34" BorderThickness="1">
-                    <StackPanel>
-                        <TextBlock Text="DEFECT DETECTION (MASK R-CNN)"
-                                   FontFamily="{StaticResource Montserrat}"
-                                   Foreground="#FF6E6E76" FontSize="11" FontWeight="Bold"
-                                   Margin="0,0,0,6"/>
-                        <TextBlock x:Name="DefectInfoText" Text="---"
-                                   FontFamily="{StaticResource ShareTechMono}"
-                                   Foreground="#FFC8C8CD" FontSize="13"/>
-                    </StackPanel>
-                </Border>
-
-                <!-- Batch Timing -->
-                <TextBlock x:Name="CycleTimeText" Text=""
-                           FontFamily="{StaticResource ShareTechMono}"
-                           Foreground="#FF64B5F6" FontSize="12" Margin="0,0,0,6"
-                           TextWrapping="Wrap"/>
-
-                <TextBlock x:Name="DetailsText" Text=""
-                           FontFamily="{StaticResource Montserrat}"
-                           Foreground="#FF505058" FontSize="12"
-                           TextWrapping="Wrap"/>
-            </StackPanel>
-        </ScrollViewer>
+            </ScrollViewer>
+        </Grid>
     </Grid>
 </Window>

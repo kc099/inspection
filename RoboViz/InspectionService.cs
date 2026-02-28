@@ -12,38 +12,73 @@ using System.Windows.Media.Imaging;
 namespace RoboViz;
 
 /// <summary>
-/// Full inspection pipeline:
-///   1. Geometric measurement on raw image (2448×2048)
+/// Full inspection pipeline supporting two detector types:
+///   - Mask R-CNN for CAM 1, 3 (defect segmentation)
+///   - PatchCore for CAM 2, 4 (anomaly detection)
+///
+/// Pipeline per frame:
+///   1. Geometric measurement on raw image (2448x2048)
 ///   2. Evaluate rework/reject thresholds
-///   3. If geometric PASS ? bin+crop to 720×720 ? Mask R-CNN defect detection
-///   4. Final verdict: REWORK ? REJECT ? PASS
+///   3. If geometric PASS:
+///      - Mask R-CNN: bin+crop to 720x720 then detect
+///      - PatchCore: resize 660 then center-crop 640x640 then detect
+///   4. Final verdict: REWORK / REJECT / PASS
 /// </summary>
 public class InspectionService : IDisposable
 {
-    private readonly MaskRCNNDetector _detector;
+    private readonly MaskRCNNDetector _maskrcnn;
+    private readonly PatchCoreDetector _patchcore;
     private readonly float _scoreThreshold;
     private Dictionary<string, MetricThreshold> _thresholds;
     private string _currentModel;
 
-    public string ActiveProvider => _detector.ActiveProvider;
-    public string? GpuError => _detector.GpuError;
+    public string ActiveProvider => _maskrcnn.ActiveProvider;
+    public string? GpuError => _maskrcnn.GpuError;
     public string CurrentModel => _currentModel;
     public Dictionary<string, MetricThreshold> CurrentThresholds => _thresholds;
 
-    public InspectionService(string onnxModelPath, float scoreThreshold = 0.5f,
+    public InspectionService(string maskrcnnModelPath, float scoreThreshold = 0.5f,
         bool useGpu = true, IProgress<string>? progress = null,
         string modelName = "Model 2")
     {
-        _detector = new MaskRCNNDetector(onnxModelPath, useGpu, progress);
+        _maskrcnn = new MaskRCNNDetector(maskrcnnModelPath, useGpu, progress);
+        _patchcore = new PatchCoreDetector(useGpu);
         _scoreThreshold = scoreThreshold;
         _currentModel = modelName;
         _thresholds = LoadThresholdsForModel(modelName);
+
+        LoadPatchCoreModel(modelName, progress);
     }
 
-    public void SwitchModel(string modelName)
+    public void SwitchModel(string modelName, IProgress<string>? progress = null)
     {
+        if (_currentModel == modelName) return;
         _currentModel = modelName;
         _thresholds = LoadThresholdsForModel(modelName);
+
+        // Unload previous PatchCore model and load new one to save GPU memory
+        LoadPatchCoreModel(modelName, progress);
+    }
+
+    private void LoadPatchCoreModel(string modelName, IProgress<string>? progress)
+    {
+        string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+        string suffix = modelName == "Model 1" ? "model1" : "model2";
+        string onnxPath = Path.Combine(baseDir, $"patchcore_{suffix}_resnet50_fp16.onnx");
+        string jsonPath = Path.Combine(baseDir, $"patchcore_{suffix}_resnet50.json");
+
+        if (!File.Exists(onnxPath))
+        {
+            progress?.Report($"PatchCore model not found: {onnxPath}");
+            return;
+        }
+
+        float threshold = 15.0f;
+        var meta = PatchCoreDetector.LoadMetadata(jsonPath);
+        if (meta?.recommended_threshold != null)
+            threshold = meta.recommended_threshold.Value;
+
+        _patchcore.LoadModel(onnxPath, threshold, progress);
     }
 
     private static Dictionary<string, MetricThreshold> LoadThresholdsForModel(string modelName)
@@ -55,18 +90,19 @@ public class InspectionService : IDisposable
         return ThresholdConfig.LoadThresholds(path);
     }
 
-    public InspectionResult Inspect(Bitmap rawImage)
+    /// <summary>
+    /// Run Mask R-CNN inspection (CAM 1, 3).
+    /// </summary>
+    public InspectionResult InspectMaskRCNN(Bitmap rawImage)
     {
         var totalSw = Stopwatch.StartNew();
 
-        // --- Step 1: Geometric measurement on raw image ---
         var geoSw = Stopwatch.StartNew();
         var geoResult = OringMeasurement.Measure(rawImage);
         long geoMs = geoSw.ElapsedMilliseconds;
 
         if (geoResult == null)
         {
-            totalSw.Stop();
             return new InspectionResult
             {
                 Verdict = "ERROR",
@@ -77,7 +113,6 @@ public class InspectionService : IDisposable
             };
         }
 
-        // --- Step 2: Normalize & evaluate thresholds ---
         double scale = ThresholdConfig.ComputeResolutionScale(rawImage.Width, rawImage.Height);
         var rawMetrics = geoResult.ToDictionary();
         var normedMetrics = ThresholdConfig.NormalizeMeasurements(rawMetrics, scale);
@@ -85,28 +120,26 @@ public class InspectionService : IDisposable
 
         var result = new InspectionResult
         {
+            DetectorType = "MaskRCNN",
             GeoResult = geoResult,
             MetricResults = metricResults,
             GeoMs = geoMs,
         };
 
-        // --- Step 3: Rework/Reject from geometry ? skip Mask R-CNN ---
         if (geoVerdict is "REWORK" or "REJECT")
         {
             result.Verdict = geoVerdict;
             result.FailReasons = failReasons;
             result.OverlayImage = OringMeasurement.DrawGeometricOverlay(rawImage, geoResult);
-            totalSw.Stop();
             result.TotalMs = totalSw.ElapsedMilliseconds;
             return result;
         }
 
-        // --- Step 4: Geometric PASS ? bin+crop to 720×720 ? Mask R-CNN ---
         var prepSw = Stopwatch.StartNew();
         using var img720 = OringMeasurement.BinCrop720(rawImage);
         long prepMs = prepSw.ElapsedMilliseconds;
 
-        var detections = _detector.Detect(img720, _scoreThreshold,
+        var detections = _maskrcnn.Detect(img720, _scoreThreshold,
             out long tensorMs, out long inferenceMs);
 
         result.TensorMs = tensorMs;
@@ -115,6 +148,18 @@ public class InspectionService : IDisposable
         result.Detections = detections;
         result.HasDefect = detections.Count > 0;
         result.TopScore = result.HasDefect ? detections.Max(d => d.Score) : 0f;
+
+        var counts = new int[detections.Count];
+        for (int di = 0; di < detections.Count; di++)
+        {
+            var mask = detections[di].Mask;
+            int h = mask.GetLength(0), w = mask.GetLength(1), c = 0;
+            for (int py = 0; py < h; py++)
+                for (int px = 0; px < w; px++)
+                    if (mask[py, px] > 0.5f) c++;
+            counts[di] = c;
+        }
+        result.MaskPixelCounts = [..counts];
 
         if (result.HasDefect)
         {
@@ -131,7 +176,95 @@ public class InspectionService : IDisposable
             result.OverlayImage = rawImage;
         }
 
-        totalSw.Stop();
+        result.TotalMs = totalSw.ElapsedMilliseconds;
+        return result;
+    }
+
+    /// <summary>
+    /// Run PatchCore inspection (CAM 2, 4).
+    /// </summary>
+    public InspectionResult InspectPatchCore(Bitmap rawImage)
+    {
+        var totalSw = Stopwatch.StartNew();
+
+        var geoSw = Stopwatch.StartNew();
+        var geoResult = OringMeasurement.Measure(rawImage);
+        long geoMs = geoSw.ElapsedMilliseconds;
+
+        if (geoResult == null)
+        {
+            return new InspectionResult
+            {
+                DetectorType = "PatchCore",
+                Verdict = "ERROR",
+                TotalMs = totalSw.ElapsedMilliseconds,
+                GeoMs = geoMs,
+                ErrorMessage = "Could not detect o-ring contours",
+                OverlayImage = rawImage,
+            };
+        }
+
+        double scale = ThresholdConfig.ComputeResolutionScale(rawImage.Width, rawImage.Height);
+        var rawMetrics = geoResult.ToDictionary();
+        var normedMetrics = ThresholdConfig.NormalizeMeasurements(rawMetrics, scale);
+        var (metricResults, geoVerdict, failReasons) = ThresholdConfig.Evaluate(normedMetrics, _thresholds);
+
+        var result = new InspectionResult
+        {
+            DetectorType = "PatchCore",
+            GeoResult = geoResult,
+            MetricResults = metricResults,
+            GeoMs = geoMs,
+        };
+
+        if (geoVerdict is "REWORK" or "REJECT")
+        {
+            result.Verdict = geoVerdict;
+            result.FailReasons = failReasons;
+            result.OverlayImage = OringMeasurement.DrawGeometricOverlay(rawImage, geoResult);
+            result.TotalMs = totalSw.ElapsedMilliseconds;
+            return result;
+        }
+
+        if (!_patchcore.IsLoaded)
+        {
+            result.Verdict = "ERROR";
+            result.ErrorMessage = "PatchCore model not loaded";
+            result.OverlayImage = rawImage;
+            result.TotalMs = totalSw.ElapsedMilliseconds;
+            return result;
+        }
+
+        // Preprocess: bin+crop to 720, then resize 660 -> center crop 640
+        var prepSw = Stopwatch.StartNew();
+        using var img720 = OringMeasurement.BinCrop720(rawImage);
+        using var img640 = PatchCoreDetector.Preprocess(img720);
+        long prepMs = prepSw.ElapsedMilliseconds;
+
+        var pcResult = _patchcore.Detect(img640, out long tensorMs, out long inferenceMs);
+
+        result.TensorMs = tensorMs;
+        result.InferenceMs = inferenceMs;
+        result.PrepMs = prepMs;
+        result.AnomalyScore = pcResult.AnomalyScore;
+        result.AnomalyThreshold = _patchcore.Threshold;
+        result.HasDefect = pcResult.IsAnomaly;
+
+        if (pcResult.IsAnomaly)
+        {
+            result.Verdict = "REJECT";
+            result.FailReasons = [$"Anomaly detected (score: {pcResult.AnomalyScore:F2} > {_patchcore.Threshold:F2})"];
+
+            var overlaySw = Stopwatch.StartNew();
+            result.OverlayImage = PatchCoreDetector.DrawHeatmapOverlay(img640, pcResult.AnomalyMap);
+            result.OverlayMs = overlaySw.ElapsedMilliseconds;
+        }
+        else
+        {
+            result.Verdict = "PASS";
+            result.OverlayImage = rawImage;
+        }
+
         result.TotalMs = totalSw.ElapsedMilliseconds;
         return result;
     }
@@ -217,12 +350,14 @@ public class InspectionService : IDisposable
 
     public void Dispose()
     {
-        _detector?.Dispose();
+        _maskrcnn?.Dispose();
+        _patchcore?.Dispose();
     }
 }
 
 public class InspectionResult
 {
+    public string DetectorType { get; set; } = "MaskRCNN";
     public string Verdict { get; set; } = string.Empty;
     public string? ErrorMessage { get; set; }
     public List<string> FailReasons { get; set; } = [];
@@ -231,10 +366,15 @@ public class InspectionResult
     public GeometricResult? GeoResult { get; set; }
     public List<MetricEvalResult> MetricResults { get; set; } = [];
 
-    // Defect detection
+    // Mask R-CNN specific
     public bool HasDefect { get; set; }
     public List<Detection> Detections { get; set; } = [];
     public float TopScore { get; set; }
+    public List<int> MaskPixelCounts { get; set; } = [];
+
+    // PatchCore specific
+    public float AnomalyScore { get; set; }
+    public float AnomalyThreshold { get; set; }
 
     // Timing
     public long TotalMs { get; set; }

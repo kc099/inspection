@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Microsoft.Win32;
 
 namespace RoboViz
@@ -49,11 +50,18 @@ namespace RoboViz
             VerdictNeutralBg.Freeze(); VerdictErrorBg.Freeze();
         }
 
+        private readonly DispatcherTimer _clockTimer;
+
         public MainWindow()
         {
             InitializeComponent();
             _imageDisplays = [ImageDisplay0, ImageDisplay1, ImageDisplay2, ImageDisplay3];
             _verdictLabels = [VerdictLabel0, VerdictLabel1, VerdictLabel2, VerdictLabel3];
+
+            _clockTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+            _clockTimer.Tick += (_, _) => DateTimeText.Text = DateTime.Now.ToString("yyyy-MM-dd  HH:mm:ss");
+            _clockTimer.Start();
+            DateTimeText.Text = DateTime.Now.ToString("yyyy-MM-dd  HH:mm:ss");
         }
 
         private async void Window_Loaded(object sender, RoutedEventArgs e)
@@ -111,19 +119,20 @@ namespace RoboViz
             SwitchModel("Model 2");
         }
 
-        private void SwitchModel(string model)
+        private async void SwitchModel(string model)
         {
             if (_service == null) return;
-            _service.SwitchModel(model);
+            BtnAnalyze.IsEnabled = false;
+            StatusText.Text = $"Switching to {model}...";
+
+            var progress = new Progress<string>(status => StatusText.Text = status);
+            await Task.Run(() => _service.SwitchModel(model, progress));
+
             StatusText.Text = $"Model: ready  [{_service.ActiveProvider}]  ({_service.CurrentModel})";
             PopulateMetricsTable();
+            BtnAnalyze.IsEnabled = _currentImage != null;
         }
 
-        /// <summary>
-        /// Show the metric table with Lo/Hi thresholds pre-populated.
-        /// Value and Status show "—" until analysis is run.
-        /// After analysis, pass metricResults to show actual values.
-        /// </summary>
         private void PopulateMetricsTable(List<MetricEvalResult>? metricResults = null)
         {
             if (_service == null) return;
@@ -138,7 +147,6 @@ namespace RoboViz
 
                 thresholds.TryGetValue(def.Key, out var t);
 
-                // Check if we have analysis results for this metric
                 MetricEvalResult? evalResult = null;
                 if (metricResults != null)
                 {
@@ -151,8 +159,8 @@ namespace RoboViz
                 var row = new MetricRowViewModel
                 {
                     Label = $"{catTag} {def.DisplayName}{unit}",
-                    LoText = t != null && t.Lo < 9999 ? t.Lo.ToString(fmt) : "—",
-                    HiText = t != null && t.Hi < 9999 ? t.Hi.ToString(fmt) : "—",
+                    LoText = t != null && t.Lo < 9999 ? t.Lo.ToString(fmt) : "\u2014",
+                    HiText = t != null && t.Hi < 9999 ? t.Hi.ToString(fmt) : "\u2014",
                 };
 
                 if (evalResult != null)
@@ -164,8 +172,8 @@ namespace RoboViz
                 }
                 else
                 {
-                    row.ValueText = "—";
-                    row.StatusText = "—";
+                    row.ValueText = "\u2014";
+                    row.StatusText = "\u2014";
                     row.ValueColor = DimGray;
                     row.StatusColor = DimGray;
                 }
@@ -196,8 +204,6 @@ namespace RoboViz
                 VerdictText.Text = "";
                 VerdictBorder.Background = VerdictNeutralBg;
                 CycleTimeText.Text = "";
-                FailReasonsText.Text = "";
-                DefectInfoText.Text = "---";
                 foreach (var lbl in _verdictLabels)
                     lbl.Text = "";
                 PopulateMetricsTable();
@@ -211,14 +217,13 @@ namespace RoboViz
             if (_currentImage == null || _service == null) return;
 
             BtnAnalyze.IsEnabled = false;
-            StatusText.Text = "Analyzing 4 frames...";
+            StatusText.Text = "Analyzing 4 frames (MaskRCNN + PatchCore)...";
 
             InspectionResult[] results = new InspectionResult[FrameCount];
             long batchMs = 0;
 
             await Task.Run(() =>
             {
-                // Create copies on the main task thread (Bitmap ctor is not concurrent-safe on same source)
                 var copies = new Bitmap[FrameCount];
                 for (int i = 0; i < FrameCount; i++)
                     copies[i] = new Bitmap(_currentImage);
@@ -226,11 +231,13 @@ namespace RoboViz
                 var batchSw = Stopwatch.StartNew();
                 Parallel.For(0, FrameCount, i =>
                 {
-                    results[i] = _service.Inspect(copies[i]);
+                    // CAM 1,3 (index 0,2) -> MaskRCNN; CAM 2,4 (index 1,3) -> PatchCore
+                    results[i] = (i % 2 == 0)
+                        ? _service.InspectMaskRCNN(copies[i])
+                        : _service.InspectPatchCore(copies[i]);
                 });
                 batchMs = batchSw.ElapsedMilliseconds;
 
-                // Only dispose copies not retained as overlay images
                 for (int i = 0; i < FrameCount; i++)
                 {
                     if (!ReferenceEquals(copies[i], results[i].OverlayImage))
@@ -257,11 +264,17 @@ namespace RoboViz
                 _verdictLabels[i].Foreground = verdictColors.GetValueOrDefault(r.Verdict, NormalGray);
             }
 
-            // --- Use frame 1 result for the detail panels ---
-            var result = results[0];
+            // --- Determine worst verdict across all frames ---
+            string batchVerdict = "PASS";
+            foreach (var r in results)
+            {
+                if (r.Verdict == "ERROR") { batchVerdict = "ERROR"; break; }
+                if (r.Verdict == "REJECT") batchVerdict = "REJECT";
+                else if (r.Verdict == "REWORK" && batchVerdict == "PASS") batchVerdict = "REWORK";
+            }
 
-            VerdictText.Text = result.Verdict;
-            VerdictBorder.Background = result.Verdict switch
+            VerdictText.Text = batchVerdict;
+            VerdictBorder.Background = batchVerdict switch
             {
                 "PASS" => VerdictPassBg,
                 "REWORK" => VerdictReworkBg,
@@ -270,63 +283,20 @@ namespace RoboViz
                 _ => VerdictNeutralBg,
             };
 
-            if (result.ErrorMessage != null)
-                FailReasonsText.Text = result.ErrorMessage;
-            else if (result.FailReasons.Count > 0)
-                FailReasonsText.Text = string.Join(", ", result.FailReasons);
-            else
-                FailReasonsText.Text = "";
-
-            PopulateMetricsTable(result.MetricResults);
-
-            if (result.Verdict is "REWORK")
-            {
-                DefectInfoText.Text = "Skipped (geometric rework)";
-                DefectInfoText.Foreground = new SolidColorBrush(
-                    System.Windows.Media.Color.FromRgb(255, 183, 77));
-            }
-            else if (result.Verdict is "REJECT" && result.GeoResult != null && !result.HasDefect
-                     && result.InferenceMs == 0)
-            {
-                DefectInfoText.Text = "Skipped (geometric reject)";
-                DefectInfoText.Foreground = FailRed;
-            }
-            else if (result.HasDefect)
-            {
-                DefectInfoText.Text = $"{result.Detections.Count} defect(s)  " +
-                                      $"(top: {result.TopScore:P0})  " +
-                                      $"Inference: {result.InferenceMs} ms";
-                DefectInfoText.Foreground = FailRed;
-            }
-            else
-            {
-                DefectInfoText.Text = $"No defects  |  Inference: {result.InferenceMs} ms";
-                DefectInfoText.Foreground = PassGreen;
-            }
+            PopulateMetricsTable(results[0].MetricResults);
 
             // --- Batch timing summary ---
-            long totalGeo = 0, totalPrep = 0, totalTensor = 0, totalInf = 0, totalOverlay = 0;
-            for (int i = 0; i < FrameCount; i++)
-            {
-                totalGeo += results[i].GeoMs;
-                totalPrep += results[i].PrepMs;
-                totalTensor += results[i].TensorMs;
-                totalInf += results[i].InferenceMs;
-                totalOverlay += results[i].OverlayMs;
-            }
-
+            string[] camTypes = ["MRCNN", "PCore", "MRCNN", "PCore"];
             CycleTimeText.Text =
                 $"BATCH ({FrameCount} frames): {batchMs} ms total  |  " +
                 $"Avg: {batchMs / FrameCount} ms/frame\n" +
-                $"Per-frame avg:  Geo: {totalGeo / FrameCount} ms  |  " +
-                $"Prep: {totalPrep / FrameCount} ms  |  " +
-                $"Tensor: {totalTensor / FrameCount} ms  |  " +
-                $"Inference: {totalInf / FrameCount} ms  |  " +
-                $"Overlay: {totalOverlay / FrameCount} ms\n" +
-                $"CAM 1: {results[0].TotalMs} ms  |  " +
-                $"CAM 2: {results[1].TotalMs} ms  |  " +
-                $"CAM 3: {results[2].TotalMs} ms  |  " +
-                $"CAM 4: {results[3].TotalMs} ms";
+                $"CAM 1 ({camTypes[0]}): {results[0].TotalMs} ms  |  " +
+                $"CAM 2 ({camTypes[1]}): {results[1].TotalMs} ms  |  " +
+                $"CAM 3 ({camTypes[2]}): {results[2].TotalMs} ms  |  " +
+                $"CAM 4 ({camTypes[3]}): {results[3].TotalMs} ms\n" +
+                $"PatchCore  CAM 2: {results[1].AnomalyScore:F2}  |  " +
+                $"CAM 4: {results[3].AnomalyScore:F2}  |  " +
+                $"Threshold: {results[1].AnomalyThreshold:F2}";
 
             StatusText.Text = $"Model: ready  [{_service!.ActiveProvider}]  ({_service.CurrentModel})";
             BtnAnalyze.IsEnabled = true;

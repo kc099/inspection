@@ -41,6 +41,13 @@ public static class OringMeasurement
     public const int DefaultBgValue = 24;
     private const int DefaultThreshold = 30;
 
+    static OringMeasurement()
+    {
+        // Limit OpenCV internal parallelism to avoid thread oversubscription
+        // when multiple Inspect() calls run in parallel via Parallel.For
+        Cv2.SetNumThreads(4);
+    }
+
     /// <summary>
     /// Measure an o-ring from a raw image (any resolution).
     /// Returns null if contours cannot be found.

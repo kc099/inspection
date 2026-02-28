@@ -1,0 +1,17 @@
+{
+  "model": "model2_resnet50",
+  "auroc_fp32": 1.0,
+  "auroc_fp16": 1.0,
+  "gap_fp32": 1.3849544525146484,
+  "gap_fp16": 1.3828125,
+  "score_diff_mean": 0.008518918417394161,
+  "score_diff_max": 0.04641151428222656,
+  "map_diff_mean": 0.03139914944767952,
+  "map_diff_max": 0.11608123779296875,
+  "onnx_size_fp32_mb": 1372.3,
+  "onnx_size_fp16_mb": 686.2,
+  "good_max_fp32": 12.730855941772461,
+  "good_max_fp16": 12.7421875,
+  "defect_min_fp32": 14.11581039428711,
+  "defect_min_fp16": 14.125
+}

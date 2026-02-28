@@ -24,6 +24,18 @@
     <None Update="maskrcnn_oring.onnx">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Update="patchcore_model1_resnet50_fp16.onnx">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="patchcore_model1_resnet50.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="patchcore_model2_resnet50_fp16.onnx">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="patchcore_model2_resnet50.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Update="model1_tuned_thresholds.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
