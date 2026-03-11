@@ -3,3 +3,4 @@ RoboViz/obj/
 RoboViz/referencefiles/
 RoboViz/*.onnx
 .vs/
+RoboViz/MvCameraControlNet_V2

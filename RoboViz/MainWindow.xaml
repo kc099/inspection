@@ -94,13 +94,13 @@
 
         <!-- Top Header Bar spanning full width -->
         <Grid Grid.Row="0" Margin="0,0,0,12">
-            <TextBlock Text="WASHER DIMENSION ANALYZER"
+            <TextBlock Text="WASHER DEFECT DETECTION"
                        FontFamily="{StaticResource Orbitron}" FontSize="24" FontWeight="Bold"
                        Foreground="#FF42A5F5" HorizontalAlignment="Center"
                        VerticalAlignment="Center"/>
             <TextBlock x:Name="DateTimeText" Text=""
-                       FontFamily="{StaticResource ShareTechMono}" FontSize="13"
-                       Foreground="#FF6E6E76" HorizontalAlignment="Right"
+                       FontFamily="{StaticResource ShareTechMono}" FontSize="15"
+                       FontWeight="Bold" Foreground="#FFE0E0E6" HorizontalAlignment="Right"
                        VerticalAlignment="Center" Margin="0,0,4,0"/>
         </Grid>
 
@@ -115,7 +115,7 @@
             <Grid Grid.Column="0" Margin="0,0,16,0">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="*"/>
-                    <RowDefinition Height="*"/>
+                    <RowDefinition x:Name="BottomCamRow" Height="*"/>
                 </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
@@ -125,7 +125,7 @@
                 <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource ImageFrame}">
                     <Grid>
                         <Image x:Name="ImageDisplay0" Stretch="Uniform" Margin="6"/>
-                    <TextBlock Text="CAM 1 [MaskRCNN]" FontFamily="{StaticResource Montserrat}"
+                    <TextBlock x:Name="CamLabel0" Text="CAM 1 [MaskRCNN]" FontFamily="{StaticResource Montserrat}"
                                    FontSize="10" FontWeight="Bold" Foreground="#FF505058"
                                    HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10,8"/>
                         <TextBlock x:Name="VerdictLabel0" Text=""
@@ -139,7 +139,7 @@
                 <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource ImageFrame}">
                     <Grid>
                         <Image x:Name="ImageDisplay1" Stretch="Uniform" Margin="6"/>
-                    <TextBlock Text="CAM 2 [PatchCore]" FontFamily="{StaticResource Montserrat}"
+                    <TextBlock x:Name="CamLabel1" Text="CAM 2 [MaskRCNN]" FontFamily="{StaticResource Montserrat}"
                                    FontSize="10" FontWeight="Bold" Foreground="#FF505058"
                                    HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10,8"/>
                         <TextBlock x:Name="VerdictLabel1" Text=""
@@ -150,10 +150,10 @@
                     </Grid>
                 </Border>
 
-                <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource ImageFrame}">
+                <Border x:Name="CamBorder2" Grid.Row="1" Grid.Column="0" Style="{StaticResource ImageFrame}">
                     <Grid>
                         <Image x:Name="ImageDisplay2" Stretch="Uniform" Margin="6"/>
-                    <TextBlock Text="CAM 3 [MaskRCNN]" FontFamily="{StaticResource Montserrat}"
+                    <TextBlock x:Name="CamLabel2" Text="CAM 3 [PatchCore]" FontFamily="{StaticResource Montserrat}"
                                    FontSize="10" FontWeight="Bold" Foreground="#FF505058"
                                    HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10,8"/>
                         <TextBlock x:Name="VerdictLabel2" Text=""
@@ -164,10 +164,10 @@
                     </Grid>
                 </Border>
 
-                <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource ImageFrame}">
+                <Border x:Name="CamBorder3" Grid.Row="1" Grid.Column="1" Style="{StaticResource ImageFrame}">
                     <Grid>
                         <Image x:Name="ImageDisplay3" Stretch="Uniform" Margin="6"/>
-                    <TextBlock Text="CAM 4 [PatchCore]" FontFamily="{StaticResource Montserrat}"
+                    <TextBlock x:Name="CamLabel3" Text="CAM 4 [PatchCore]" FontFamily="{StaticResource Montserrat}"
                                    FontSize="10" FontWeight="Bold" Foreground="#FF505058"
                                    HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10,8"/>
                         <TextBlock x:Name="VerdictLabel3" Text=""
@@ -187,37 +187,136 @@
                                FontFamily="{StaticResource Montserrat}" FontSize="15"
                                Foreground="#FFC8C8CD" Margin="0,0,0,14"/>
 
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
-                        <Button Content="Load Image" Width="140" Height="44"
+                    <Grid Margin="0,0,0,10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Button Grid.Column="0" Content="Load Image" Height="50"
                                 Click="LoadImage_Click" Background="#FF2E7D32"
-                                Style="{StaticResource ActionButton}"/>
-                        <Button x:Name="BtnAnalyze" Content="Analyze" Width="140" Height="44"
-                                Click="Analyze_Click" Margin="10,0,0,0" Background="#FF1565C0"
-                                Style="{StaticResource ActionButton}" IsEnabled="False"/>
+                                Style="{StaticResource ActionButton}" Margin="0,0,5,0"/>
+                        <Button Grid.Column="1" x:Name="BtnStream" Content="Start Stream" Height="50"
+                                Click="Stream_Click" Background="#FF6A1B9A"
+                                Style="{StaticResource ActionButton}" Margin="5,0,5,0"/>
+                        <Button Grid.Column="2" x:Name="BtnAnalyze" Content="Analyze" Height="50"
+                                Click="Analyze_Click" Background="#FF1565C0"
+                                Style="{StaticResource ActionButton}" IsEnabled="False" Margin="5,0,0,0"/>
+                        <StackPanel Grid.Row="1" Grid.ColumnSpan="3" Orientation="Horizontal" Margin="0,8,0,0">
+                            <CheckBox x:Name="ChkShowOverlay"
+                                      Content="Show Overlay" IsChecked="False"
+                                      Foreground="#FFC8C8CD" FontFamily="{StaticResource Montserrat}"
+                                      FontSize="13" VerticalAlignment="Center"/>
+                            <TextBlock Text="CAMERAS" FontFamily="{StaticResource Montserrat}"
+                                       FontSize="11" FontWeight="Bold" Foreground="#FF6E6E76"
+                                       VerticalAlignment="Center" Margin="24,0,8,0"/>
+                            <ToggleButton x:Name="Btn2Cam" Style="{StaticResource ModelToggle}"
+                                          Width="70" Height="30" Checked="Cam2_Click">
+                                <TextBlock Text="2 CAM" FontFamily="{StaticResource Montserrat}"
+                                           FontSize="11" FontWeight="SemiBold"/>
+                            </ToggleButton>
+                            <ToggleButton x:Name="Btn4Cam" Style="{StaticResource ModelToggle}"
+                                          IsChecked="True" Width="70" Height="30" Margin="6,0,0,0"
+                                          Checked="Cam4_Click">
+                                <TextBlock Text="4 CAM" FontFamily="{StaticResource Montserrat}"
+                                           FontSize="11" FontWeight="SemiBold"/>
+                            </ToggleButton>
+                        </StackPanel>
+                    </Grid>
 
-                        <Border Margin="20,0,0,0" Background="#FF1C1C24" CornerRadius="8"
-                                BorderBrush="#FF2A2A34" BorderThickness="1" Padding="6,0">
-                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                <TextBlock Text="MODEL" FontFamily="{StaticResource Montserrat}"
-                                           FontSize="11" FontWeight="Bold" Foreground="#FF6E6E76"
-                                           VerticalAlignment="Center" Margin="6,0,10,0"/>
-                                <ToggleButton x:Name="BtnModel1" Content="Model 1"
+                    <!-- Model Selection -->
+                    <Border Background="#FF1C1C24" CornerRadius="8"
+                            BorderBrush="#FF2A2A34" BorderThickness="1" Padding="10,8"
+                            Margin="0,0,0,16">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="MODEL" FontFamily="{StaticResource Montserrat}"
+                                       FontSize="11" FontWeight="Bold" Foreground="#FF6E6E76"
+                                       VerticalAlignment="Center" Margin="0,0,14,0"/>
+                            <ToggleButton x:Name="BtnModel1"
+                                          Style="{StaticResource ModelToggle}"
+                                          Checked="Model1_Click" Margin="0,0,10,0"
+                                          Width="180" Height="100">
+                                <StackPanel>
+                                    <Image Source="Assets/model1.png" Height="60" Stretch="Uniform" Margin="0,2,0,4"/>
+                                    <TextBlock Text="Model 1" HorizontalAlignment="Center"
+                                               FontFamily="{StaticResource Montserrat}"
+                                               FontSize="12" FontWeight="SemiBold"/>
+                                </StackPanel>
+                            </ToggleButton>
+                            <ToggleButton x:Name="BtnModel2" IsChecked="True"
+                                          Style="{StaticResource ModelToggle}"
+                                          Checked="Model2_Click" Margin="0,0,0,0"
+                                          Width="180" Height="100">
+                                <StackPanel>
+                                    <Image Source="Assets/model2.png" Height="60" Stretch="Uniform" Margin="0,2,0,4"/>
+                                    <TextBlock Text="Model 2" HorizontalAlignment="Center"
+                                               FontFamily="{StaticResource Montserrat}"
+                                               FontSize="12" FontWeight="SemiBold"/>
+                                </StackPanel>
+                            </ToggleButton>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Detector Assignment Per Row -->
+                    <Border Background="#FF1C1C24" CornerRadius="8"
+                            BorderBrush="#FF2A2A34" BorderThickness="1" Padding="10,8"
+                            Margin="0,0,0,16">
+                        <StackPanel>
+                            <TextBlock Text="DETECTOR ASSIGNMENT" FontFamily="{StaticResource Montserrat}"
+                                       FontSize="11" FontWeight="Bold" Foreground="#FF6E6E76"
+                                       Margin="0,0,0,8"/>
+                            <!-- Row 1 (CAM 1 & CAM 2) -->
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                <TextBlock Text="ROW 1 (CAM 1-2)" FontFamily="{StaticResource Montserrat}"
+                                           FontSize="11" Foreground="#FF42A5F5"
+                                           VerticalAlignment="Center" Width="120"/>
+                                <ToggleButton x:Name="BtnRow1MaskRCNN" IsChecked="True"
                                               Style="{StaticResource ModelToggle}"
-                                              Checked="Model1_Click" Margin="0,4,6,4"/>
-                                <ToggleButton x:Name="BtnModel2" Content="Model 2"
-                                              Style="{StaticResource ModelToggle}" IsChecked="True"
-                                              Checked="Model2_Click" Margin="0,4,6,4"/>
+                                              Width="100" Height="30" Checked="Row1MaskRCNN_Click">
+                                    <TextBlock Text="MaskRCNN" FontFamily="{StaticResource Montserrat}"
+                                               FontSize="11" FontWeight="SemiBold"/>
+                                </ToggleButton>
+                                <ToggleButton x:Name="BtnRow1PatchCore"
+                                              Style="{StaticResource ModelToggle}"
+                                              Width="100" Height="30" Margin="6,0,0,0"
+                                              Checked="Row1PatchCore_Click">
+                                    <TextBlock Text="PatchCore" FontFamily="{StaticResource Montserrat}"
+                                               FontSize="11" FontWeight="SemiBold"/>
+                                </ToggleButton>
                             </StackPanel>
-                        </Border>
-                    </StackPanel>
+                            <!-- Row 2 (CAM 3 & CAM 4) -->
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="ROW 2 (CAM 3-4)" FontFamily="{StaticResource Montserrat}"
+                                           FontSize="11" Foreground="#FF42A5F5"
+                                           VerticalAlignment="Center" Width="120"/>
+                                <ToggleButton x:Name="BtnRow2MaskRCNN"
+                                              Style="{StaticResource ModelToggle}"
+                                              Width="100" Height="30" Checked="Row2MaskRCNN_Click">
+                                    <TextBlock Text="MaskRCNN" FontFamily="{StaticResource Montserrat}"
+                                               FontSize="11" FontWeight="SemiBold"/>
+                                </ToggleButton>
+                                <ToggleButton x:Name="BtnRow2PatchCore" IsChecked="True"
+                                              Style="{StaticResource ModelToggle}"
+                                              Width="100" Height="30" Margin="6,0,0,0"
+                                              Checked="Row2PatchCore_Click">
+                                    <TextBlock Text="PatchCore" FontFamily="{StaticResource Montserrat}"
+                                               FontSize="11" FontWeight="SemiBold"/>
+                                </ToggleButton>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
 
                     <!-- Batch Verdict Banner -->
                     <Border x:Name="VerdictBorder" Height="84" CornerRadius="12"
                             Background="#FF1C1C24" Margin="0,0,0,14"
                             BorderBrush="#FF2A2A34" BorderThickness="1">
-                        <TextBlock x:Name="VerdictText" Text=""
+                        <TextBlock x:Name="VerdictText" Text="LOADING..."
                                    FontFamily="{StaticResource Orbitron}"
-                                   Foreground="White" FontSize="42" FontWeight="Bold"
+                                   Foreground="#FF6E6E76" FontSize="42" FontWeight="Bold"
                                    HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
 
@@ -299,6 +398,126 @@
                                FontFamily="{StaticResource Montserrat}"
                                Foreground="#FF505058" FontSize="12"
                                TextWrapping="Wrap"/>
+
+                    <!-- Modbus RS-485 Configuration -->
+                    <Border Background="#FF18181E" CornerRadius="10" Padding="14,12" Margin="0,14,0,14"
+                            BorderBrush="#FF2A2A34" BorderThickness="1">
+                        <StackPanel>
+                            <TextBlock Text="MODBUS RS-485 OUTPUT"
+                                       FontFamily="{StaticResource Montserrat}"
+                                       Foreground="#FF6E6E76" FontSize="11" FontWeight="Bold"
+                                       Margin="0,0,0,10"/>
+
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="COM Port"
+                                           FontFamily="{StaticResource Montserrat}"
+                                           Foreground="#FF42A5F5" FontSize="12"
+                                           VerticalAlignment="Center" Margin="0,0,8,6"/>
+                                <ComboBox x:Name="CmbComPort" Grid.Row="0" Grid.Column="1"
+                                          FontFamily="{StaticResource ShareTechMono}" FontSize="12"
+                                          Background="#FF252530" Foreground="#FFC8C8CD"
+                                          Margin="0,0,16,6" MinWidth="90"
+                                          DropDownOpened="CmbComPort_DropDownOpened"/>
+
+                                <TextBlock Grid.Row="0" Grid.Column="2" Text="Baud Rate"
+                                           FontFamily="{StaticResource Montserrat}"
+                                           Foreground="#FF42A5F5" FontSize="12"
+                                           VerticalAlignment="Center" Margin="0,0,8,6"/>
+                                <ComboBox x:Name="CmbBaudRate" Grid.Row="0" Grid.Column="3"
+                                          FontFamily="{StaticResource ShareTechMono}" FontSize="12"
+                                          Background="#FF252530" Foreground="#FFC8C8CD"
+                                          Margin="0,0,0,6" MinWidth="90"
+                                          SelectedIndex="1">
+                                    <ComboBoxItem Content="4800"/>
+                                    <ComboBoxItem Content="9600"/>
+                                    <ComboBoxItem Content="19200"/>
+                                    <ComboBoxItem Content="38400"/>
+                                    <ComboBoxItem Content="57600"/>
+                                    <ComboBoxItem Content="115200"/>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="Slave ID"
+                                           FontFamily="{StaticResource Montserrat}"
+                                           Foreground="#FF42A5F5" FontSize="12"
+                                           VerticalAlignment="Center" Margin="0,0,8,6"/>
+                                <TextBox x:Name="TxtSlaveId" Grid.Row="1" Grid.Column="1"
+                                         Text="1"
+                                         FontFamily="{StaticResource ShareTechMono}" FontSize="12"
+                                         Background="#FF252530" Foreground="#FFC8C8CD"
+                                         BorderBrush="#FF353540" Padding="4,2"
+                                         Margin="0,0,16,6"/>
+
+                                <TextBlock Grid.Row="1" Grid.Column="2" Text="Coil Addr"
+                                           FontFamily="{StaticResource Montserrat}"
+                                           Foreground="#FF42A5F5" FontSize="12"
+                                           VerticalAlignment="Center" Margin="0,0,8,6"/>
+                                <TextBox x:Name="TxtCoilAddress" Grid.Row="1" Grid.Column="3"
+                                         Text="0"
+                                         FontFamily="{StaticResource ShareTechMono}" FontSize="12"
+                                         Background="#FF252530" Foreground="#FFC8C8CD"
+                                         BorderBrush="#FF353540" Padding="4,2"
+                                         Margin="0,0,0,6"/>
+                            </Grid>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                <Button x:Name="BtnModbusConnect" Content="Connect"
+                                        Width="100" Height="32"
+                                        Click="ModbusConnect_Click" Background="#FF1565C0"
+                                        Style="{StaticResource ActionButton}"/>
+                                <Button x:Name="BtnModbusDisconnect" Content="Disconnect"
+                                        Width="100" Height="32" Margin="10,0,0,0"
+                                        Click="ModbusDisconnect_Click" Background="#FF616161"
+                                        Style="{StaticResource ActionButton}" IsEnabled="False"/>
+                                <TextBlock x:Name="ModbusStatusText" Text="Disconnected"
+                                           FontFamily="{StaticResource ShareTechMono}"
+                                           Foreground="#FF6E6E76" FontSize="12"
+                                           VerticalAlignment="Center" Margin="14,0,0,0"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Modbus Trigger Mode -->
+                    <Border Background="#FF18181E" CornerRadius="10" Padding="14,12" Margin="0,0,0,14"
+                            BorderBrush="#FF2A2A34" BorderThickness="1">
+                        <StackPanel>
+                            <TextBlock Text="MODBUS TRIGGER MODE"
+                                       FontFamily="{StaticResource Montserrat}"
+                                       Foreground="#FF6E6E76" FontSize="11" FontWeight="Bold"
+                                       Margin="0,0,0,6"/>
+                            <TextBlock Text="Reads trigger_config.json for COM, baud, slave, coil addresses."
+                                       FontFamily="{StaticResource Montserrat}"
+                                       Foreground="#FF505058" FontSize="10"
+                                       TextWrapping="Wrap" Margin="0,0,0,8"/>
+
+                            <StackPanel Orientation="Horizontal">
+                                <Button x:Name="BtnTriggerStart" Content="Start Trigger"
+                                        Width="120" Height="32"
+                                        Click="TriggerStart_Click" Background="#FF2E7D32"
+                                        Style="{StaticResource ActionButton}"/>
+                                <Button x:Name="BtnTriggerStop" Content="Stop Trigger"
+                                        Width="120" Height="32" Margin="10,0,0,0"
+                                        Click="TriggerStop_Click" Background="#FF616161"
+                                        Style="{StaticResource ActionButton}" IsEnabled="False"/>
+                            </StackPanel>
+
+                            <TextBlock x:Name="TriggerStatusText" Text="Stopped"
+                                       FontFamily="{StaticResource ShareTechMono}"
+                                       Foreground="#FF6E6E76" FontSize="12"
+                                       Margin="0,6,0,0" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
                 </StackPanel>
             </ScrollViewer>
         </Grid>

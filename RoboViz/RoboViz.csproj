@@ -10,8 +10,12 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.2" />
+    <PackageReference Include="MvCameraControl.Net.Standard" Version="4.4.1.4" />
+    <PackageReference Include="NModbus" Version="3.0.81" />
+    <PackageReference Include="NModbus.Serial" Version="3.0.81" />
     <PackageReference Include="OpenCvSharp4" Version="4.10.0.20241108" />
     <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.10.0.20241108" />
+    <PackageReference Include="System.IO.Ports" Version="10.0.3" />
   </ItemGroup>
 
   <ItemGroup>
@@ -42,12 +46,17 @@
     <None Update="model2_tuned_thresholds.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Update="trigger_config.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
   <ItemGroup>
     <Resource Include="Fonts\Orbitron-VariableFont.ttf" />
     <Resource Include="Fonts\ShareTechMono-Regular.ttf" />
     <Resource Include="Fonts\Montserrat-VariableFont.ttf" />
+    <Resource Include="Assets\model1.png" />
+    <Resource Include="Assets\model2.png" />
   </ItemGroup>
 
 </Project>

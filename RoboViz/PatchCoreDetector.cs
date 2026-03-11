@@ -43,7 +43,7 @@ public class PatchCoreMetadata
 /// PatchCore ONNX inference wrapper for O-Ring anomaly detection.
 /// Input:  [1, 3, 640, 640] float32, RGB, [0-1]
 /// Output: anomaly_score [1] + anomaly_map [1, 1, 640, 640]
-/// Uses the same CUDA GPU provider as MaskRCNNDetector.
+/// Attempts CUDA GPU with pre-flight checks; falls back to CPU automatically.
 /// </summary>
 public class PatchCoreDetector : IDisposable
 {
@@ -94,37 +94,105 @@ public class PatchCoreDetector : IDisposable
                 var cudaOptions = new OrtCUDAProviderOptions();
                 cudaOptions.UpdateOptions(new Dictionary<string, string>
                 {
-                    ["device_id"] = "0",
-                    ["cudnn_conv_algo_search"] = "HEURISTIC",
-                    ["cudnn_conv_use_max_workspace"] = "0",
-                    ["do_copy_in_default_stream"] = "1",
-                    ["arena_extend_strategy"] = "kSameAsRequested",
+                    ["device_id"]                   = "0",
+                    ["cudnn_conv_algo_search"]       = "DEFAULT",
+                    ["cudnn_conv_use_max_workspace"] = "1",
+                    ["do_copy_in_default_stream"]    = "1",
+                    ["arena_extend_strategy"]        = "kSameAsRequested",
                 });
                 options.AppendExecutionProvider_CUDA(cudaOptions);
                 ActiveProvider = "CUDA (GPU)";
+                MaskRCNNDetector.LogDiag("  PatchCore CUDA EP appended to session options.");
             }
             catch (Exception ex)
             {
                 ActiveProvider = "CPU (CUDA unavailable)";
                 GpuError = ex.Message;
+                MaskRCNNDetector.LogDiag($"  PatchCore CUDA EP failed: {ex}");
             }
         }
 
         _threshold = threshold;
         progress?.Report("Loading PatchCore ONNX session...");
-        _session = new InferenceSession(modelPath, options);
-        _inputName = _session.InputMetadata.Keys.First();
+        
+        try
+        {
+            _session = new InferenceSession(modelPath, options);
+            _inputName = _session.InputMetadata.Keys.First();
 
-        // Resolve output names (order may differ between models)
-        var outputNames = _session.OutputMetadata.Keys.ToList();
+            // Resolve output names (order may differ between models)
+            var outputNames = _session.OutputMetadata.Keys.ToList();
+            _scoreOutputName = outputNames.FirstOrDefault(n => n.Contains("score", StringComparison.OrdinalIgnoreCase))
+                               ?? outputNames[0];
+            _mapOutputName = outputNames.FirstOrDefault(n => n.Contains("map", StringComparison.OrdinalIgnoreCase))
+                             ?? outputNames[1];
+            progress?.Report($"PatchCore outputs: score='{_scoreOutputName}', map='{_mapOutputName}' | threshold={threshold:F2}");
+
+            // Log actual tensor element types to confirm fp16 vs fp32
+            var inputMeta = _session.InputMetadata[_inputName];
+            var outMeta = _session.OutputMetadata[_scoreOutputName!];
+            MaskRCNNDetector.LogDiag($"PatchCore session created. Provider: {ActiveProvider}");
+            MaskRCNNDetector.LogDiag($"  Input  '{_inputName}': elementType={inputMeta.ElementType}  shape=[{string.Join(",", inputMeta.Dimensions)}]");
+            MaskRCNNDetector.LogDiag($"  Output '{_scoreOutputName}': elementType={outMeta.ElementType}  shape=[{string.Join(",", outMeta.Dimensions)}]");
+
+            if (ActiveProvider.StartsWith("CUDA"))
+                RunWarmUp(progress);
+        }
+        catch (Exception ex)
+        {
+            MaskRCNNDetector.LogDiag($"PatchCore session creation failed: {ex}");
+            ActiveProvider = "CPU (Session creation failed)";
+            GpuError = ex.Message;
+            throw; // Re-throw to let caller handle
+        }
+    }
+
+    private void ResolveOutputNames()
+    {
+        var outputNames = _session!.OutputMetadata.Keys.ToList();
         _scoreOutputName = outputNames.FirstOrDefault(n => n.Contains("score", StringComparison.OrdinalIgnoreCase))
                            ?? outputNames[0];
         _mapOutputName = outputNames.FirstOrDefault(n => n.Contains("map", StringComparison.OrdinalIgnoreCase))
                          ?? outputNames[1];
-        progress?.Report($"PatchCore outputs: score='{_scoreOutputName}', map='{_mapOutputName}' | threshold={threshold:F2}");
+        MaskRCNNDetector.LogDiag(
+            $"PatchCore outputs: score='{_scoreOutputName}', map='{_mapOutputName}' | threshold={_threshold:F2}");
+    }
 
-        if (ActiveProvider.StartsWith("CUDA"))
-            WarmUp(progress);
+    private bool RunWarmUp(IProgress<string>? progress)
+    {
+        var buffer = _inputBuffer.Value!;
+        var tensor = new DenseTensor<float>(buffer, [1, 3, InputSize, InputSize]);
+        var inputs = new List<NamedOnnxValue>
+        {
+            NamedOnnxValue.CreateFromTensor(_inputName!, tensor)
+        };
+
+        for (int i = 0; i < 3; i++)
+        {
+            progress?.Report($"PatchCore GPU warmup {i + 1}/3 (may take 30-60s on PCIe Gen2)...");
+            MaskRCNNDetector.LogDiag($"  PatchCore warmup {i + 1}/3...");
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                using var _ = _session!.Run(inputs);
+                sw.Stop();
+                MaskRCNNDetector.LogDiag($"  PatchCore warmup {i + 1}/3 completed in {sw.ElapsedMilliseconds}ms.");
+            }
+            catch (Exception ex)
+            {
+                sw.Stop();
+                MaskRCNNDetector.LogDiag($"  PatchCore warmup {i + 1}/3 FAILED after {sw.ElapsedMilliseconds}ms: {ex}");
+                MaskRCNNDetector.LogDiag($"  Exception type: {ex.GetType().Name}");
+                MaskRCNNDetector.LogDiag($"  Inner exception: {ex.InnerException?.Message}");
+                ActiveProvider = "CPU (CUDA warmup failed)";
+                GpuError = $"Warmup failed: {ex.Message}";
+                progress?.Report($"PatchCore GPU warmup failed – falling back to CPU. {ex.Message}");
+                return false;
+            }
+        }
+
+        MaskRCNNDetector.LogDiag("  PatchCore warmup complete.");
+        return true;
     }
 
     /// <summary>
@@ -139,22 +207,6 @@ public class PatchCoreDetector : IDisposable
         _mapOutputName = null;
     }
 
-    private void WarmUp(IProgress<string>? progress)
-    {
-        var buffer = _inputBuffer.Value!;
-        var tensor = new DenseTensor<float>(buffer, [1, 3, InputSize, InputSize]);
-        var inputs = new List<NamedOnnxValue>
-        {
-            NamedOnnxValue.CreateFromTensor(_inputName!, tensor)
-        };
-
-        for (int i = 0; i < 2; i++)
-        {
-            progress?.Report($"PatchCore GPU warmup {i + 1}/2...");
-            using var _ = _session!.Run(inputs);
-        }
-    }
-
     /// <summary>
     /// Run anomaly detection on a preprocessed 640x640 image.
     /// </summary>
@@ -166,19 +218,21 @@ public class PatchCoreDetector : IDisposable
         var sw = Stopwatch.StartNew();
         var buffer = _inputBuffer.Value!;
         FillInputBuffer(image, buffer);
+        
+        // Create input tensor - using float for both FP16 and FP32 models
+        // ONNX Runtime handles conversion internally if needed
         var tensor = new DenseTensor<float>(buffer, [1, 3, image.Height, image.Width]);
-        tensorMs = sw.ElapsedMilliseconds;
-
         var inputs = new List<NamedOnnxValue>
         {
             NamedOnnxValue.CreateFromTensor(_inputName, tensor)
         };
+        tensorMs = sw.ElapsedMilliseconds;
 
         sw.Restart();
         using var results = _session.Run(inputs);
         inferenceMs = sw.ElapsedMilliseconds;
 
-        // Look up outputs by name (not index � order is not guaranteed)
+        // Look up outputs by name (not index — order is not guaranteed)
         var resultList = results.ToList();
         var scoreResult = resultList.First(r => r.Name == _scoreOutputName);
         var mapResult = resultList.First(r => r.Name == _mapOutputName);
@@ -191,7 +245,28 @@ public class PatchCoreDetector : IDisposable
         int mapW = mapTensorF32?.Dimensions[3] ?? mapTensorF16!.Dimensions[3];
 
         var map = new float[mapH, mapW];
-        if (mapTensorF32 != null)
+        if (mapTensorF32 is DenseTensor<float> denseF32)
+        {
+            // Fast path: read contiguous buffer directly (avoids per-element indexer overhead)
+            var span = denseF32.Buffer.Span;
+            for (int y = 0; y < mapH; y++)
+            {
+                int srcOffset = y * mapW; // shape is [1, 1, H, W] so data starts at offset 0
+                for (int x = 0; x < mapW; x++)
+                    map[y, x] = span[srcOffset + x];
+            }
+        }
+        else if (mapTensorF16 is DenseTensor<Float16> denseF16)
+        {
+            var span = denseF16.Buffer.Span;
+            for (int y = 0; y < mapH; y++)
+            {
+                int srcOffset = y * mapW;
+                for (int x = 0; x < mapW; x++)
+                    map[y, x] = (float)span[srcOffset + x];
+            }
+        }
+        else if (mapTensorF32 != null)
         {
             for (int y = 0; y < mapH; y++)
                 for (int x = 0; x < mapW; x++)

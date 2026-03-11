@@ -91,20 +91,24 @@ public class InspectionService : IDisposable
     }
 
     /// <summary>
-    /// Run Mask R-CNN inspection (CAM 1, 3).
+    /// Shared geometric measurement + threshold evaluation.
+    /// Returns the partially filled result and the geo verdict.
+    /// If the result is terminal (ERROR / REWORK / REJECT), geoVerdict != "PASS".
     /// </summary>
-    public InspectionResult InspectMaskRCNN(Bitmap rawImage)
+    private InspectionResult RunGeoEvaluation(
+        Bitmap rawImage, string detectorType, Stopwatch totalSw,
+        out string geoVerdict)
     {
-        var totalSw = Stopwatch.StartNew();
-
         var geoSw = Stopwatch.StartNew();
         var geoResult = OringMeasurement.Measure(rawImage);
         long geoMs = geoSw.ElapsedMilliseconds;
 
         if (geoResult == null)
         {
+            geoVerdict = "ERROR";
             return new InspectionResult
             {
+                DetectorType = detectorType,
                 Verdict = "ERROR",
                 TotalMs = totalSw.ElapsedMilliseconds,
                 GeoMs = geoMs,
@@ -116,11 +120,12 @@ public class InspectionService : IDisposable
         double scale = ThresholdConfig.ComputeResolutionScale(rawImage.Width, rawImage.Height);
         var rawMetrics = geoResult.ToDictionary();
         var normedMetrics = ThresholdConfig.NormalizeMeasurements(rawMetrics, scale);
-        var (metricResults, geoVerdict, failReasons) = ThresholdConfig.Evaluate(normedMetrics, _thresholds);
+        var (metricResults, verdict, failReasons) = ThresholdConfig.Evaluate(normedMetrics, _thresholds);
+        geoVerdict = verdict;
 
         var result = new InspectionResult
         {
-            DetectorType = "MaskRCNN",
+            DetectorType = detectorType,
             GeoResult = geoResult,
             MetricResults = metricResults,
             GeoMs = geoMs,
@@ -132,8 +137,20 @@ public class InspectionService : IDisposable
             result.FailReasons = failReasons;
             result.OverlayImage = OringMeasurement.DrawGeometricOverlay(rawImage, geoResult);
             result.TotalMs = totalSw.ElapsedMilliseconds;
-            return result;
         }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Run Mask R-CNN inspection (CAM 1, 3).
+    /// </summary>
+    public InspectionResult InspectMaskRCNN(Bitmap rawImage)
+    {
+        var totalSw = Stopwatch.StartNew();
+        var result = RunGeoEvaluation(rawImage, "MaskRCNN", totalSw, out string geoVerdict);
+        if (geoVerdict != "PASS")
+            return result;
 
         var prepSw = Stopwatch.StartNew();
         using var img720 = OringMeasurement.BinCrop720(rawImage);
@@ -186,45 +203,9 @@ public class InspectionService : IDisposable
     public InspectionResult InspectPatchCore(Bitmap rawImage)
     {
         var totalSw = Stopwatch.StartNew();
-
-        var geoSw = Stopwatch.StartNew();
-        var geoResult = OringMeasurement.Measure(rawImage);
-        long geoMs = geoSw.ElapsedMilliseconds;
-
-        if (geoResult == null)
-        {
-            return new InspectionResult
-            {
-                DetectorType = "PatchCore",
-                Verdict = "ERROR",
-                TotalMs = totalSw.ElapsedMilliseconds,
-                GeoMs = geoMs,
-                ErrorMessage = "Could not detect o-ring contours",
-                OverlayImage = rawImage,
-            };
-        }
-
-        double scale = ThresholdConfig.ComputeResolutionScale(rawImage.Width, rawImage.Height);
-        var rawMetrics = geoResult.ToDictionary();
-        var normedMetrics = ThresholdConfig.NormalizeMeasurements(rawMetrics, scale);
-        var (metricResults, geoVerdict, failReasons) = ThresholdConfig.Evaluate(normedMetrics, _thresholds);
-
-        var result = new InspectionResult
-        {
-            DetectorType = "PatchCore",
-            GeoResult = geoResult,
-            MetricResults = metricResults,
-            GeoMs = geoMs,
-        };
-
-        if (geoVerdict is "REWORK" or "REJECT")
-        {
-            result.Verdict = geoVerdict;
-            result.FailReasons = failReasons;
-            result.OverlayImage = OringMeasurement.DrawGeometricOverlay(rawImage, geoResult);
-            result.TotalMs = totalSw.ElapsedMilliseconds;
+        var result = RunGeoEvaluation(rawImage, "PatchCore", totalSw, out string geoVerdict);
+        if (geoVerdict != "PASS")
             return result;
-        }
 
         if (!_patchcore.IsLoaded)
         {
