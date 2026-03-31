@@ -1,0 +1,210 @@
+<Window x:Class="RoboViz.CameraSetupDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Camera Setup" Width="720" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        Background="#FF111114">
+
+    <Window.Resources>
+        <FontFamily x:Key="Montserrat">pack://application:,,,/Fonts/#Montserrat</FontFamily>
+        <FontFamily x:Key="ShareTechMono">pack://application:,,,/Fonts/#Share Tech Mono</FontFamily>
+
+        <Style x:Key="SlotLabel" TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="{StaticResource Montserrat}"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Foreground" Value="#FF42A5F5"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="HeaderLabel" TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="{StaticResource Montserrat}"/>
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Foreground" Value="#FF6E6E76"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="HorizontalAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="SlotCombo" TargetType="ComboBox">
+            <Setter Property="FontFamily" Value="{StaticResource ShareTechMono}"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Background" Value="#FF252530"/>
+            <Setter Property="Foreground" Value="#FFC8C8CD"/>
+            <Setter Property="Margin" Value="4,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="SlotRadio" TargetType="RadioButton">
+            <Setter Property="FontFamily" Value="{StaticResource Montserrat}"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Foreground" Value="#FFC8C8CD"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Margin" Value="2,0"/>
+        </Style>
+        <Style x:Key="DelayBox" TargetType="TextBox">
+            <Setter Property="FontFamily" Value="{StaticResource ShareTechMono}"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Width" Value="50"/>
+            <Setter Property="Background" Value="#FF252530"/>
+            <Setter Property="Foreground" Value="#FFC8C8CD"/>
+            <Setter Property="BorderBrush" Value="#FF353540"/>
+            <Setter Property="Padding" Value="4,2"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="ActionBtn" TargetType="Button">
+            <Setter Property="FontFamily" Value="{StaticResource Montserrat}"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                CornerRadius="6" Padding="20,10">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.85"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.4"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <StackPanel Margin="20">
+        <!-- Title -->
+        <TextBlock Text="CAMERA SETUP" FontFamily="{StaticResource Montserrat}"
+                   FontSize="18" FontWeight="Bold" Foreground="#FF42A5F5"
+                   Margin="0,0,0,14"/>
+
+        <!-- Detected cameras -->
+        <Border Background="#FF18181E" CornerRadius="8" Padding="12,8" Margin="0,0,0,16"
+                BorderBrush="#FF2A2A34" BorderThickness="1">
+            <StackPanel>
+                <TextBlock Text="DETECTED CAMERAS" FontFamily="{StaticResource Montserrat}"
+                           FontSize="10" FontWeight="Bold" Foreground="#FF6E6E76" Margin="0,0,0,6"/>
+                <TextBlock x:Name="CameraListText" Text="Enumerating..."
+                           FontFamily="{StaticResource ShareTechMono}" FontSize="11"
+                           Foreground="#FFC8C8CD" TextWrapping="Wrap"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Configuration grid -->
+        <Border Background="#FF18181E" CornerRadius="8" Padding="12,10" Margin="0,0,0,16"
+                BorderBrush="#FF2A2A34" BorderThickness="1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="56"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="130"/>
+                    <ColumnDefinition Width="100"/>
+                    <ColumnDefinition Width="80"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="2"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- Header -->
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="SLOT" Style="{StaticResource HeaderLabel}" HorizontalAlignment="Left"/>
+                <TextBlock Grid.Row="0" Grid.Column="1" Text="CAMERA" Style="{StaticResource HeaderLabel}" HorizontalAlignment="Left" Margin="4,0"/>
+                <TextBlock Grid.Row="0" Grid.Column="2" Text="DETECTOR" Style="{StaticResource HeaderLabel}"/>
+                <TextBlock Grid.Row="0" Grid.Column="3" Text="TRIGGER" Style="{StaticResource HeaderLabel}"/>
+                <TextBlock Grid.Row="0" Grid.Column="4" Text="DELAY" Style="{StaticResource HeaderLabel}"/>
+
+                <Rectangle Grid.Row="1" Grid.ColumnSpan="5" Fill="#FF2A2A34" Margin="0,4"/>
+
+                <!-- CAM 1 -->
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="CAM 1" Style="{StaticResource SlotLabel}" Margin="0,6,0,0"/>
+                <ComboBox  Grid.Row="2" Grid.Column="1" x:Name="CmbCam0" Style="{StaticResource SlotCombo}" Margin="4,6,4,0"/>
+                <StackPanel Grid.Row="2" Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                    <RadioButton x:Name="DetMR0" Content="MRCNN" GroupName="Det0" IsChecked="True" Style="{StaticResource SlotRadio}"/>
+                    <RadioButton x:Name="DetPC0" Content="PCore" GroupName="Det0" Style="{StaticResource SlotRadio}"/>
+                </StackPanel>
+                <StackPanel Grid.Row="2" Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                    <RadioButton x:Name="Trig1_0" Content="T1" GroupName="Trig0" IsChecked="True" Style="{StaticResource SlotRadio}"/>
+                    <RadioButton x:Name="Trig2_0" Content="T2" GroupName="Trig0" Style="{StaticResource SlotRadio}"/>
+                </StackPanel>
+                <StackPanel Grid.Row="2" Grid.Column="4" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                    <TextBox x:Name="TxtDelay0" Text="50" Style="{StaticResource DelayBox}"/>
+                    <TextBlock Text="ms" Foreground="#FF6E6E76" FontSize="10" VerticalAlignment="Center" Margin="2,0,0,0"
+                               FontFamily="{StaticResource Montserrat}"/>
+                </StackPanel>
+
+                <!-- CAM 2 -->
+                <TextBlock Grid.Row="3" Grid.Column="0" Text="CAM 2" Style="{StaticResource SlotLabel}" Margin="0,6,0,0"/>
+                <ComboBox  Grid.Row="3" Grid.Column="1" x:Name="CmbCam1" Style="{StaticResource SlotCombo}" Margin="4,6,4,0"/>
+                <StackPanel Grid.Row="3" Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                    <RadioButton x:Name="DetMR1" Content="MRCNN" GroupName="Det1" IsChecked="True" Style="{StaticResource SlotRadio}"/>
+                    <RadioButton x:Name="DetPC1" Content="PCore" GroupName="Det1" Style="{StaticResource SlotRadio}"/>
+                </StackPanel>
+                <StackPanel Grid.Row="3" Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                    <RadioButton x:Name="Trig1_1" Content="T1" GroupName="Trig1" IsChecked="True" Style="{StaticResource SlotRadio}"/>
+                    <RadioButton x:Name="Trig2_1" Content="T2" GroupName="Trig1" Style="{StaticResource SlotRadio}"/>
+                </StackPanel>
+                <StackPanel Grid.Row="3" Grid.Column="4" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                    <TextBox x:Name="TxtDelay1" Text="50" Style="{StaticResource DelayBox}"/>
+                    <TextBlock Text="ms" Foreground="#FF6E6E76" FontSize="10" VerticalAlignment="Center" Margin="2,0,0,0"
+                               FontFamily="{StaticResource Montserrat}"/>
+                </StackPanel>
+
+                <!-- CAM 3 -->
+                <TextBlock Grid.Row="4" Grid.Column="0" Text="CAM 3" Style="{StaticResource SlotLabel}" Margin="0,6,0,0"/>
+                <ComboBox  Grid.Row="4" Grid.Column="1" x:Name="CmbCam2" Style="{StaticResource SlotCombo}" Margin="4,6,4,0"/>
+                <StackPanel Grid.Row="4" Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                    <RadioButton x:Name="DetMR2" Content="MRCNN" GroupName="Det2" Style="{StaticResource SlotRadio}"/>
+                    <RadioButton x:Name="DetPC2" Content="PCore" GroupName="Det2" IsChecked="True" Style="{StaticResource SlotRadio}"/>
+                </StackPanel>
+                <StackPanel Grid.Row="4" Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                    <RadioButton x:Name="Trig1_2" Content="T1" GroupName="Trig2" IsChecked="True" Style="{StaticResource SlotRadio}"/>
+                    <RadioButton x:Name="Trig2_2" Content="T2" GroupName="Trig2" Style="{StaticResource SlotRadio}"/>
+                </StackPanel>
+                <StackPanel Grid.Row="4" Grid.Column="4" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                    <TextBox x:Name="TxtDelay2" Text="50" Style="{StaticResource DelayBox}"/>
+                    <TextBlock Text="ms" Foreground="#FF6E6E76" FontSize="10" VerticalAlignment="Center" Margin="2,0,0,0"
+                               FontFamily="{StaticResource Montserrat}"/>
+                </StackPanel>
+
+                <!-- CAM 4 -->
+                <TextBlock Grid.Row="5" Grid.Column="0" Text="CAM 4" Style="{StaticResource SlotLabel}" Margin="0,6,0,0"/>
+                <ComboBox  Grid.Row="5" Grid.Column="1" x:Name="CmbCam3" Style="{StaticResource SlotCombo}" Margin="4,6,4,0"/>
+                <StackPanel Grid.Row="5" Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                    <RadioButton x:Name="DetMR3" Content="MRCNN" GroupName="Det3" Style="{StaticResource SlotRadio}"/>
+                    <RadioButton x:Name="DetPC3" Content="PCore" GroupName="Det3" IsChecked="True" Style="{StaticResource SlotRadio}"/>
+                </StackPanel>
+                <StackPanel Grid.Row="5" Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                    <RadioButton x:Name="Trig1_3" Content="T1" GroupName="Trig3" Style="{StaticResource SlotRadio}"/>
+                    <RadioButton x:Name="Trig2_3" Content="T2" GroupName="Trig3" IsChecked="True" Style="{StaticResource SlotRadio}"/>
+                </StackPanel>
+                <StackPanel Grid.Row="5" Grid.Column="4" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                    <TextBox x:Name="TxtDelay3" Text="50" Style="{StaticResource DelayBox}"/>
+                    <TextBlock Text="ms" Foreground="#FF6E6E76" FontSize="10" VerticalAlignment="Center" Margin="2,0,0,0"
+                               FontFamily="{StaticResource Montserrat}"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Summary -->
+        <TextBlock x:Name="SummaryText" Text="" FontFamily="{StaticResource Montserrat}"
+                   FontSize="11" Foreground="#FF6E6E76" Margin="0,0,0,14" TextWrapping="Wrap"/>
+
+        <!-- Buttons -->
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="Start Streaming" Click="Start_Click" Background="#FF2E7D32"
+                    Style="{StaticResource ActionBtn}" x:Name="BtnStart"/>
+            <Button Content="Cancel" Click="Cancel_Click" Background="#FF616161"
+                    Style="{StaticResource ActionBtn}" Margin="10,0,0,0"/>
+        </StackPanel>
+    </StackPanel>
+</Window>

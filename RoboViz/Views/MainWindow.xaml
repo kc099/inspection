@@ -241,7 +241,7 @@
                                           Checked="Model1_Click" Margin="0,0,10,0"
                                           Width="180" Height="100">
                                 <StackPanel>
-                                    <Image Source="Assets/model1.png" Height="60" Stretch="Uniform" Margin="0,2,0,4"/>
+                                    <Image Source="/Assets/model1.png" Height="60" Stretch="Uniform" Margin="0,2,0,4"/>
                                     <TextBlock Text="Model 1" HorizontalAlignment="Center"
                                                FontFamily="{StaticResource Montserrat}"
                                                FontSize="12" FontWeight="SemiBold"/>
@@ -252,7 +252,7 @@
                                           Checked="Model2_Click" Margin="0,0,0,0"
                                           Width="180" Height="100">
                                 <StackPanel>
-                                    <Image Source="Assets/model2.png" Height="60" Stretch="Uniform" Margin="0,2,0,4"/>
+                                    <Image Source="/Assets/model2.png" Height="60" Stretch="Uniform" Margin="0,2,0,4"/>
                                     <TextBlock Text="Model 2" HorizontalAlignment="Center"
                                                FontFamily="{StaticResource Montserrat}"
                                                FontSize="12" FontWeight="SemiBold"/>
@@ -261,54 +261,23 @@
                         </StackPanel>
                     </Border>
 
-                    <!-- Detector Assignment Per Row -->
+                    <!-- Camera Configuration Summary -->
                     <Border Background="#FF1C1C24" CornerRadius="8"
                             BorderBrush="#FF2A2A34" BorderThickness="1" Padding="10,8"
                             Margin="0,0,0,16">
                         <StackPanel>
-                            <TextBlock Text="DETECTOR ASSIGNMENT" FontFamily="{StaticResource Montserrat}"
+                            <TextBlock Text="CAMERA CONFIGURATION" FontFamily="{StaticResource Montserrat}"
                                        FontSize="11" FontWeight="Bold" Foreground="#FF6E6E76"
-                                       Margin="0,0,0,8"/>
-                            <!-- Row 1 (CAM 1 & CAM 2) -->
-                            <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
-                                <TextBlock Text="ROW 1 (CAM 1-2)" FontFamily="{StaticResource Montserrat}"
-                                           FontSize="11" Foreground="#FF42A5F5"
-                                           VerticalAlignment="Center" Width="120"/>
-                                <ToggleButton x:Name="BtnRow1MaskRCNN" IsChecked="True"
-                                              Style="{StaticResource ModelToggle}"
-                                              Width="100" Height="30" Checked="Row1MaskRCNN_Click">
-                                    <TextBlock Text="MaskRCNN" FontFamily="{StaticResource Montserrat}"
-                                               FontSize="11" FontWeight="SemiBold"/>
-                                </ToggleButton>
-                                <ToggleButton x:Name="BtnRow1PatchCore"
-                                              Style="{StaticResource ModelToggle}"
-                                              Width="100" Height="30" Margin="6,0,0,0"
-                                              Checked="Row1PatchCore_Click">
-                                    <TextBlock Text="PatchCore" FontFamily="{StaticResource Montserrat}"
-                                               FontSize="11" FontWeight="SemiBold"/>
-                                </ToggleButton>
-                            </StackPanel>
-                            <!-- Row 2 (CAM 3 & CAM 4) -->
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="ROW 2 (CAM 3-4)" FontFamily="{StaticResource Montserrat}"
-                                           FontSize="11" Foreground="#FF42A5F5"
-                                           VerticalAlignment="Center" Width="120"/>
-                                <ToggleButton x:Name="BtnRow2MaskRCNN"
-                                              Style="{StaticResource ModelToggle}"
-                                              Width="100" Height="30" Checked="Row2MaskRCNN_Click">
-                                    <TextBlock Text="MaskRCNN" FontFamily="{StaticResource Montserrat}"
-                                               FontSize="11" FontWeight="SemiBold"/>
-                                </ToggleButton>
-                                <ToggleButton x:Name="BtnRow2PatchCore" IsChecked="True"
-                                              Style="{StaticResource ModelToggle}"
-                                              Width="100" Height="30" Margin="6,0,0,0"
-                                              Checked="Row2PatchCore_Click">
-                                    <TextBlock Text="PatchCore" FontFamily="{StaticResource Montserrat}"
-                                               FontSize="11" FontWeight="SemiBold"/>
-                                </ToggleButton>
-                            </StackPanel>
+                                       Margin="0,0,0,6"/>
+                            <TextBlock x:Name="CameraConfigText"
+                                       Text="Not configured - click Start Stream to set up cameras."
+                                       FontFamily="{StaticResource ShareTechMono}"
+                                       FontSize="11" Foreground="#FFC8C8CD"
+                                       TextWrapping="Wrap"/>
                         </StackPanel>
                     </Border>
+
+
 
                     <!-- Batch Verdict Banner -->
                     <Border x:Name="VerdictBorder" Height="84" CornerRadius="12"

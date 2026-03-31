@@ -1,389 +1,366 @@
-# RoboViz � O-Ring Inspection System: Complete Developer Guide
-
-> **Last updated based on the actual codebase (net10.0-windows, C# 14)**
-
----
+# RoboViz — O-Ring Inspection System: Architecture & Developer Guide
 
 ## Table of Contents
 
-1.  [Project Overview](#1-project-overview)
-2.  [Technology Stack](#2-technology-stack)
-3.  [Solution Structure & File Map](#3-solution-structure--file-map)
-4.  [The Three Operating Modes](#4-the-three-operating-modes)
-5.  [Inspection Pipeline � End to End](#5-inspection-pipeline--end-to-end)
-6.  [File-by-File Reference](#6-file-by-file-reference)
-7.  [Geometric Measurement (Stage 1)](#7-geometric-measurement-stage-1)
-8.  [Threshold Evaluation (Stage 2)](#8-threshold-evaluation-stage-2)
-9.  [Mask R-CNN Defect Detection](#9-mask-r-cnn-defect-detection)
-10. [PatchCore Anomaly Detection](#10-patchcore-anomaly-detection)
-11. [Detector Assignment (Row-Based)](#11-detector-assignment-row-based)
-12. [Verdict Decision Matrix](#12-verdict-decision-matrix)
-13. [Camera Integration](#13-camera-integration)
-14. [Modbus RS-485 Communication](#14-modbus-rs-485-communication)
-15. [Trigger Service (Producer-Consumer)](#15-trigger-service-producer-consumer)
-16. [GPU / CUDA Setup](#16-gpu--cuda-setup)
-17. [Common Debugging Scenarios](#17-common-debugging-scenarios)
-18. [Recommended Reading Order](#18-recommended-reading-order)
+1. [Project Overview](#1-project-overview)
+2. [Technology Stack](#2-technology-stack)
+3. [Solution Structure](#3-solution-structure)
+4. [File-by-File Reference](#4-file-by-file-reference)
+5. [Inspection Pipeline — End to End](#5-inspection-pipeline--end-to-end)
+6. [Geometric Measurement (Stage 1)](#6-geometric-measurement-stage-1)
+7. [Threshold Evaluation (Stage 2)](#7-threshold-evaluation-stage-2)
+8. [Defect Detection — Dual Detector Architecture (Stages 3–4)](#8-defect-detection--dual-detector-architecture-stages-34)
+9. [Verdict Decision Matrix](#9-verdict-decision-matrix)
+10. [Multi-Camera Batch Processing](#10-multi-camera-batch-processing)
+11. [Live Camera Streaming](#11-live-camera-streaming)
+12. [Modbus RS-485 PLC Integration](#12-modbus-rs-485-plc-integration)
+13. [GPU / CUDA Setup & Diagnostics](#13-gpu--cuda-setup--diagnostics)
+14. [Data Flow Diagram](#14-data-flow-diagram)
+15. [Where to Start Reading](#15-where-to-start-reading)
 
 ---
 
 ## 1. Project Overview
 
-RoboViz is a **WPF desktop application** that inspects rubber O-Rings using
-industrial cameras and two independent AI detection techniques. It supports up to
-4 cameras in a 2�2 grid and produces one of four outcomes per camera:
+RoboViz is a **WPF desktop application** for automated quality inspection of rubber O-Rings
+in an industrial production line. It captures images from up to **4 HikRobot GigE/USB cameras**,
+runs a multi-stage analysis pipeline, and communicates pass/reject decisions to a PLC
+over **Modbus RTU (RS-485)**.
 
-| Verdict      | Meaning                                                                  |
-|-------------|--------------------------------------------------------------------------|
-| **PASS**    | Geometry OK and no surface defects found.                                |
-| **REWORK**  | Ring shape is deformed (radius or circularity out of range). Salvageable.|
-| **REJECT**  | Structurally unsound (off-center/eccentric) or has surface defects.      |
-| **ERROR**   | Contours not detected, model not loaded, or camera frame unavailable.    |
+Given a high-resolution camera image (2448×2048 pixels), it produces one of three verdicts:
+
+| Verdict    | Meaning                                                                 |
+|------------|-------------------------------------------------------------------------|
+| **PASS**   | O-Ring geometry is within tolerance and no surface defects were found.   |
+| **REWORK** | O-Ring shape is deformed (radius or circularity out of range). May be salvageable. |
+| **REJECT** | O-Ring is structurally unsound (off-center/eccentric) or has surface defects. Not recoverable. |
+
+The system combines **three** independent analysis techniques:
+
+- **Classical computer vision** (OpenCvSharp) — measures 6 geometric properties of the ring.
+- **Mask R-CNN** (ONNX, GPU) — pixel-level defect segmentation (used on CAM 1 & 3).
+- **PatchCore** (ONNX, GPU) — unsupervised anomaly detection with heatmap (used on CAM 2 & 4).
 
 ---
 
 ## 2. Technology Stack
 
-| Component                | Technology                                         |
-|--------------------------|----------------------------------------------------|
-| UI Framework             | WPF (.NET 10, C# 14)                              |
-| Geometric Measurement    | OpenCvSharp 4.10                                   |
-| Defect Detection (1)     | Mask R-CNN (ONNX, 720�720 input)                   |
-| Anomaly Detection (2)    | PatchCore (ONNX, 640�640 input, ResNet-50 backbone)|
-| ML Inference Runtime     | Microsoft.ML.OnnxRuntime.Gpu 1.24.2               |
-| GPU Acceleration         | NVIDIA CUDA 12.x + cuDNN 9                        |
-| Industrial Cameras       | HikRobot MVS SDK (MvCameraControl)                |
-| PLC Communication        | Modbus RTU over RS-485 (NModbus library)           |
-| Target OS                | Windows x64                                        |
+| Component                | Technology                                              |
+|--------------------------|---------------------------------------------------------|
+| UI Framework             | WPF (.NET 10, C# 14)                                   |
+| Geometric Measurement    | OpenCvSharp 4.10                                        |
+| Defect Detection (seg.)  | Mask R-CNN (ONNX, 720×720 input)                       |
+| Anomaly Detection        | PatchCore (ONNX FP16, ResNet-50 backbone, 640×640 input)|
+| ML Inference Runtime     | Microsoft.ML.OnnxRuntime.Gpu 1.24.2                    |
+| GPU Acceleration         | NVIDIA CUDA 12.x + cuDNN 9                             |
+| Camera SDK               | MvCameraControl.Net.Standard 4.4.1 (HikRobot MVS)      |
+| PLC Communication        | NModbus 3.0.81 (Modbus RTU over RS-485)                 |
+| Serial Port              | System.IO.Ports 10.0.3                                  |
+| Target OS                | Windows (x64)                                           |
 
 ---
 
-## 3. Solution Structure & File Map
+## 3. Solution Structure
 
 ```
 RoboViz/
-??? RoboViz.sln
-??? RoboViz/
-?   ??? RoboViz.csproj                    # net10.0-windows, WPF
-?   ?
-?   ??? MainWindow.xaml                   # UI layout (XAML)
-?   ??? MainWindow.xaml.cs                # UI code-behind � THE ENTRY POINT
-?   ??? App.xaml / App.xaml.cs            # WPF application bootstrap
-?   ?
-?   ??? InspectionService.cs              # Pipeline orchestrator + InspectionResult model
-?   ??? OringMeasurement.cs               # OpenCV geometric measurement + image prep
-?   ??? ThresholdConfig.cs                # 6 metric definitions, threshold loading, evaluation
-?   ??? MaskRCNNDetector.cs               # ONNX Mask R-CNN wrapper (CUDA GPU)
-?   ??? PatchCoreDetector.cs              # ONNX PatchCore wrapper (CUDA GPU)
-?   ?
-?   ??? CameraManager.cs                  # HikRobot MVS multi-camera streaming
-?   ??? ModbusService.cs                  # Modbus RTU master (NModbus)
-?   ??? TriggerService.cs                 # Producer-consumer trigger pipeline
-?   ??? trigger_config.json               # Trigger mode configuration
-?   ?
-?   ??? maskrcnn_oring.onnx               # Pre-trained Mask R-CNN model
-?   ??? patchcore_model1_resnet50_fp16.onnx  # PatchCore model for Model 1
-?   ??? patchcore_model2_resnet50_fp16.onnx  # PatchCore model for Model 2
-?   ??? model1_tuned_thresholds.json      # Geometric thresholds for Model 1
-?   ??? model2_tuned_thresholds.json      # Geometric thresholds for Model 2
-?   ??? patchcore_model1_resnet50.json    # PatchCore metadata (threshold) for Model 1
-?   ??? patchcore_model2_resnet50.json    # PatchCore metadata (threshold) for Model 2
-?   ??? Fonts/                            # Custom UI fonts
+├── RoboViz.sln                                     # Solution file
+├── README.md                                        # Setup & prerequisites
+├── RoboViz/
+│   ├── RoboViz.csproj                               # Project file (net10.0-windows, WPF)
+│   ├── App.xaml / App.xaml.cs                        # WPF application entry point
+│   ├── MainWindow.xaml                               # UI layout (XAML)
+│   ├── MainWindow.xaml.cs                            # UI code-behind (event handlers, display logic)
+│   │
+│   ├── InspectionService.cs                          # Pipeline orchestrator + InspectionResult model
+│   ├── OringMeasurement.cs                           # OpenCV geometric measurement + image prep
+│   ├── ThresholdConfig.cs                            # Metric definitions, threshold loading, evaluation
+│   │
+│   ├── MaskRCNNDetector.cs                           # Mask R-CNN ONNX inference (CUDA GPU) + diagnostics
+│   ├── PatchCoreDetector.cs                          # PatchCore anomaly detection ONNX inference (CUDA GPU)
+│   ├── maskrcnn_oring.onnx                           # Pre-trained Mask R-CNN model
+│   ├── patchcore_model1_resnet50_fp16.onnx           # PatchCore FP16 model for Model 1
+│   ├── patchcore_model2_resnet50_fp16.onnx           # PatchCore FP16 model for Model 2
+│   ├── patchcore_model1_resnet50_fp16_ablation.json  # PatchCore metadata + threshold for Model 1
+│   ├── patchcore_model2_resnet50_fp16_ablation.json  # PatchCore metadata + threshold for Model 2
+│   ├── model1_tuned_thresholds.json                  # Geometric metric thresholds for Model 1
+│   ├── model2_tuned_thresholds.json                  # Geometric metric thresholds for Model 2
+│   │
+│   ├── CameraManager.cs                              # HikRobot multi-camera streaming manager
+│   ├── ModbusService.cs                              # Modbus RTU master for PLC rejection coils
+│   │
+│   ├── Fonts/                                        # Custom UI fonts (Orbitron, ShareTechMono, Montserrat)
+│   └── Assets/                                       # UI assets (model1.png, model2.png)
 ```
 
 ---
 
-## 4. The Three Operating Modes
+## 4. File-by-File Reference
 
-The application has **three distinct ways** to trigger inspection. Understanding
-which mode you're in is the **first thing to figure out when debugging**.
+### `InspectionService.cs` — The Orchestrator
 
-### Mode 1: Manual / Load Image Mode
+**Purpose:** Wires together the entire inspection pipeline. Now supports **two detector paths**.
 
-```
-User clicks [Load Image] ? picks a .bmp file ? image displayed in all 4 frames
-User clicks [Analyze]    ? 4 copies of that image inspected in parallel
-```
+| Member                              | Role                                                                                     |
+|-------------------------------------|------------------------------------------------------------------------------------------|
+| `InspectMaskRCNN(Bitmap rawImage)`  | Runs geometry → thresholds → Mask R-CNN (used for CAM 1, 3).                            |
+| `InspectPatchCore(Bitmap rawImage)` | Runs geometry → thresholds → PatchCore anomaly detection (used for CAM 2, 4).            |
+| `RunGeoEvaluation(...)`             | Shared helper: runs geometric measurement + threshold evaluation for both paths.         |
+| `SwitchModel(string modelName)`     | Hot-swaps thresholds AND reloads the PatchCore ONNX model for the selected model.        |
+| `DrawDefectOverlay(...)`            | Blends a red tint on Mask R-CNN mask pixels + draws score labels.                        |
+| `BitmapToBitmapSource(...)`         | Converts GDI+ `Bitmap` to WPF `BitmapSource`. Freezes for thread safety.                |
 
-- **Entry point:** `LoadImage_Click` ? `Analyze_Click` (MainWindow.xaml.cs)
-- **Data source:** A single static file loaded from disk, cloned 4 times.
-- **No cameras needed.** Good for offline testing.
-- **No Modbus needed** (but will write coils if Modbus is connected).
-
-### Mode 2: Live Camera Streaming Mode
-
-```
-User clicks [Start Stream] ? cameras initialize ? continuous polling at 500ms
-Each tick: grab latest frames ? display ? run inspection ? show results
-User clicks [Analyze] during streaming ? manual snapshot analysis
-```
-
-- **Entry point:** `Stream_Click` ? `StreamTimer_Tick` (MainWindow.xaml.cs)
-- **Data source:** Live frames from HikRobot cameras via `CameraManager`.
-- **Auto-analysis:** `DispatcherTimer` polls every 500ms, grabs frames, runs
-  inspection, updates UI.
-- **Manual override:** Clicking [Analyze] during streaming pauses auto-analysis,
-  runs a one-shot analysis, then resumes.
-
-### Mode 3: Modbus Trigger Mode
-
-```
-User clicks [Start Trigger] ? producer thread polls Modbus input coils
-PLC sets coil HIGH ? producer enqueues trigger event
-Consumer thread: captures camera frames ? runs inspection ? writes output coils
-```
-
-- **Entry point:** `TriggerStart_Click` ? `TriggerService.Start()` (MainWindow.xaml.cs + TriggerService.cs)
-- **Data source:** Camera frames captured on-demand when a trigger fires.
-- **Two camera pairs:** Coil at `TriggerCoil_Cam13` triggers CAM 1+3; coil at
-  `TriggerCoil_Cam24` triggers CAM 2+4.
-- **Configuration:** Loaded from `trigger_config.json`:
-  ```json
-  {
-    "ComPort": "COM6",
-    "BaudRate": 115200,
-    "SlaveId": 1,
-    "TriggerCoil_Cam13": 3001,
-    "TriggerCoil_Cam24": 3002,
-    "OutputCoilAddress": 3003,
-    "CaptureDelayMs": 50,
-    "PollIntervalMs": 200
-  }
-  ```
-- **Edge detection:** Only fires on LOW?HIGH transition (not while coil stays HIGH).
-- **Output:** Writes rejection result back to Modbus output coils.
+**Also defines:** `InspectionResult` — carries verdict, timing, metric results, Mask R-CNN detections,
+PatchCore anomaly score/threshold, and overlay image.
 
 ---
 
-## 5. Inspection Pipeline � End to End
+### `OringMeasurement.cs` — Geometric Analysis
 
-Every single camera frame (regardless of operating mode) goes through the same
-pipeline inside `InspectionService`. The detector type (MaskRCNN or PatchCore)
-is determined by the **row-based detector assignment** (see Section 11).
+**Purpose:** Classical computer vision to extract 6 measurable properties of the O-Ring.
+
+| Method                       | Role                                                                                   |
+|------------------------------|----------------------------------------------------------------------------------------|
+| `Measure(Bitmap)`            | Full pipeline: grayscale → mask → contours → circle fit → 6 metrics.                   |
+| `BinCrop720(Bitmap)`         | Downscales 2×2, crops to foreground bounding box, resizes/pads to 720×720.              |
+| `DrawGeometricOverlay(...)` | Draws fitted circles (green=outer, red=inner) and a yellow center-distance line.        |
+| `BuildMask(...)`             | Background subtraction → thresholding → morphological cleanup → largest component.      |
+| `FitCircleLsq(...)`         | Least-squares circle fit from contour points (3×3 linear solve).                        |
+
+**Also defines:** `GeometricResult` — holds 6 measured values and center coordinates.
+
+---
+
+### `ThresholdConfig.cs` — Metric Definitions & Evaluation
+
+**Purpose:** Defines what is measured, acceptable ranges, and pass/fail judgment.
+
+| Member                        | Role                                                                              |
+|-------------------------------|-----------------------------------------------------------------------------------|
+| `MetricDefs[]`                | Array of 6 metric definitions with display name, unit, threshold type, verdict category. |
+| `LoadThresholds(jsonPath)`    | Reads lo/hi from JSON. Fills missing with defaults. Widens reject thresholds by 10%.     |
+| `GetDefaultThresholds()`      | Fallback hardcoded thresholds if JSON is missing.                                 |
+| `ComputeResolutionScale(...)` | Scale factor for normalizing pixel metrics to the reference 2448px resolution.    |
+| `NormalizeMeasurements(...)`  | Divides linear metrics (radii, center distance) by the resolution scale.          |
+| `Evaluate(...)`               | Compares each metric against thresholds → per-metric pass/fail + overall verdict. |
+
+**Also defines:** `MetricDef`, `MetricThreshold`, `MetricEvalResult` (record types).
+
+Note: The JSON threshold files (e.g., `model1_tuned_thresholds.json`) contain many more metrics
+(18 total including `ring_thickness`, `thickness_cv`, `annular_area_k`, etc.), but **only 6 are used**
+by the app — the rest are ignored at load time.
+
+---
+
+### `MaskRCNNDetector.cs` — Mask R-CNN Inference (CAM 1, 3)
+
+**Purpose:** Loads and runs the Mask R-CNN ONNX model on GPU. Now includes full GPU diagnostics.
+
+| Member                        | Role                                                                              |
+|-------------------------------|-----------------------------------------------------------------------------------|
+| Constructor                   | Multi-step GPU init: path setup → DLL probe → version check → CUDA session → warmup. Falls back to CPU on any failure. |
+| `Detect(Bitmap, threshold)`   | Converts image to RGB float tensor → runs inference → parses boxes/scores/masks.  |
+| `EnsureNvidiaLibsOnPath()`    | **Public static.** Adds pip-installed cuDNN/cuBLAS paths to `PATH`. Also used by `PatchCoreDetector`. |
+| `ProbeNativeLibraries()`      | Loads every critical DLL (`cudart64_12`, `cublas64_12`, `cudnn64_9`, etc.) to verify they exist before creating the CUDA session. |
+| `CheckVersionCompatibility()` | Calls CUDA/cuDNN version APIs and logs warnings (non-blocking).                   |
+| `LogDiag(...)`                | **Public static.** Writes to `gpu_init.log` for troubleshooting.                 |
+| `FillInputBuffer(...)`        | Converts BGR 24bpp Bitmap to CHW RGB float [0..1] planar format.                 |
+
+**Also defines:** `Detection` — bounding box, confidence score, class label, per-pixel mask.
+
+Model: Input `[1, 3, 720, 720]` → Output boxes/labels/scores/masks. Classes: 0=background, 1=defect. Max 5 detections.
+
+---
+
+### `PatchCoreDetector.cs` — PatchCore Anomaly Detection (CAM 2, 4) *(NEW)*
+
+**Purpose:** Unsupervised anomaly detection using a PatchCore model (ResNet-50 backbone, FP16).
+
+| Member                          | Role                                                                                 |
+|---------------------------------|--------------------------------------------------------------------------------------|
+| `LoadModel(path, threshold)`    | Loads ONNX model, resolves output names, runs 3-pass warmup. Disposes previous model.|
+| `Unload()`                      | Disposes the current ONNX session to free GPU memory.                                |
+| `Detect(Bitmap, out ...)`       | Runs inference → returns `PatchCoreResult` with anomaly score, heatmap, and boolean. |
+| `Preprocess(Bitmap)`            | **Static.** Resize to 660×660 → center-crop to 640×640.                             |
+| `DrawHeatmapOverlay(...)`       | **Static.** Blends a jet-colormap heatmap of the anomaly map onto the image.         |
+| `LoadMetadata(jsonPath)`        | **Static.** Reads `PatchCoreMetadata` JSON (backbone, threshold, input shape).       |
+
+**Also defines:**
+- `PatchCoreResult` — anomaly score, 2D anomaly map, `IsAnomaly` flag.
+- `PatchCoreMetadata` — JSON schema for model metadata (backbone, resize, crop, threshold).
+
+Model: Input `[1, 3, 640, 640]` float RGB [0..1] → Output `anomaly_score [1]` + `anomaly_map [1, 1, 640, 640]`.
+Handles both FP32 and FP16 output tensors automatically.
+
+---
+
+### `CameraManager.cs` — Multi-Camera Streaming *(NEW)*
+
+**Purpose:** Manages up to 4 HikRobot GigE/USB cameras with continuous frame acquisition.
+
+| Member                        | Role                                                                              |
+|-------------------------------|-----------------------------------------------------------------------------------|
+| `Initialize()`                | Enumerates all GigE/USB/GenTL cameras via MVS SDK.                                |
+| `StartStreaming(progress)`    | Opens each camera, sets continuous acquisition mode, starts per-camera grab threads.|
+| `StopStreaming()`             | Signals all grab threads to stop, waits for join, closes devices.                 |
+| `GetLatestFrame(slot)`        | Returns a thread-safe copy of the most recent frame from a camera slot.           |
+| `GetAllLatestFrames()`        | Returns latest frames from all 4 slots.                                           |
+| `GrabThreadProc(slot)`        | Background thread: continuously calls `GetImageBuffer()` and updates latest frame.|
+
+Each camera runs on its own background thread. The latest frame is always available via lock-protected
+`Bitmap` references. The `MvsRuntimePath` static property points to the MVS native DLL directory.
+
+---
+
+### `ModbusService.cs` — PLC Communication *(NEW)*
+
+**Purpose:** Sends pass/reject decisions to a PLC over Modbus RTU (RS-485 serial).
+
+| Member                              | Role                                                                         |
+|-------------------------------------|------------------------------------------------------------------------------|
+| `Connect(comPort, baudRate, slaveId)`| Opens serial port + creates NModbus RTU master.                              |
+| `Disconnect()`                      | Closes port and disposes master.                                             |
+| `WriteRejectionCoils(...)`          | Writes 2 coils: Coil 0 = CAM 1+2 reject, Coil 1 = CAM 3+4 reject.         |
+| `GetAvailablePorts()`               | **Static.** Lists available COM ports on the machine.                        |
+
+Coil logic:
+- **Coil 0 = 1** if either CAM 1 or CAM 2 verdict ≠ PASS
+- **Coil 1 = 1** if either CAM 3 or CAM 4 verdict ≠ PASS
+- **Coil 0/1 = 0** if both cameras in the pair pass
+
+---
+
+### `MainWindow.xaml.cs` — UI Code-Behind
+
+**Purpose:** Handles user interaction, camera streaming, and result display.
+
+| Feature                     | Implementation                                                                     |
+|-----------------------------|------------------------------------------------------------------------------------|
+| Load Image                  | `OpenFileDialog` → loads BMP into 2 or 4 frame displays.                          |
+| Analyze                     | Runs `InspectMaskRCNN` (even CAMs) + `InspectPatchCore` (odd CAMs) in `Parallel.For`. |
+| Live Stream                 | `CameraManager` grabs frames → `DispatcherTimer` polls at 500ms → auto-analyzes.  |
+| Model Switching             | Toggle buttons swap Model 1 / Model 2 (reloads PatchCore model + thresholds).     |
+| Camera Mode (2/4)           | Toggle between 2-camera and 4-camera layouts.                                      |
+| Modbus Panel                | COM port selector, baud rate, slave ID, connect/disconnect, coil address config.   |
+| Metric Table                | `ItemsControl` bound to `MetricRowViewModel` list showing value/lo/hi/status.      |
+| Verdict Per-Frame           | Color-coded label on each camera tile.                                             |
+| Timing Summary              | Batch total, per-frame average, per-camera breakdown, PatchCore anomaly scores.    |
+
+---
+
+## 5. Inspection Pipeline — End to End
+
+`InspectionService` provides **two entry points** sharing the same geometric evaluation:
 
 ```
-???????????????????????????????????????????????????????????????
-?  INPUT: Raw Bitmap (typically 2448�2048 from camera)        ?
-???????????????????????????????????????????????????????????????
-              ?
-              ?
-???????????????????????????????????????????????????????????????
-?  STAGE 1: Geometric Measurement (OringMeasurement.Measure)  ?
-?  � Grayscale ? background subtract ? threshold ? morphology ?
-?  � Find outer contour (largest) + inner contour (largest     ?
-?    child of outer) using RETR_CCOMP hierarchy                ?
-?  � Least-squares circle fit on both contours                 ?
-?  � Compute 6 metrics: radii, circularities, center dist,    ?
-?    eccentricity                                              ?
-?  ? If no contours ? return ERROR                             ?
-???????????????????????????????????????????????????????????????
-              ? GeometricResult (6 metrics)
-              ?
-???????????????????????????????????????????????????????????????
-?  STAGE 2: Threshold Evaluation (ThresholdConfig.Evaluate)    ?
-?  � Normalize pixel metrics by resolution scale               ?
-?  � Compare each metric against lo/hi thresholds              ?
-?  ? If any rework metric fails ? return REWORK (priority)     ?
-?  ? If any reject metric fails ? return REJECT                ?
-???????????????????????????????????????????????????????????????
-              ? All 6 metrics PASS
-              ?
-       ???????????????
-       ? Which       ?
-       ? detector?   ?
-       ???????????????
-          ?       ?
-    MaskRCNN   PatchCore
-          ?       ?
-          ?       ?
-???????????????? ?????????????????????????????????????????????
-? STAGE 3a:    ? ? STAGE 3b:                                 ?
-? BinCrop720   ? ? BinCrop720 ? Resize 660 ? CenterCrop 640 ?
-? (720�720)    ? ? (640�640)                                 ?
-???????????????? ?????????????????????????????????????????????
-       ?                            ?
-       ?                            ?
-???????????????? ????????????????????????????????????????????
-? STAGE 4a:    ? ? STAGE 4b:                                ?
-? Mask R-CNN   ? ? PatchCore inference                      ?
-? inference    ? ? Output: anomaly_score + anomaly_map      ?
-? Output:      ? ? If score > threshold ? REJECT (heatmap)  ?
-? boxes+masks  ? ? Else ? PASS                              ?
-? If defects   ? ????????????????????????????????????????????
-?  ? REJECT    ?
-? Else ? PASS  ?
-????????????????
+┌─────────────────────────────────────────────────────────────────┐
+│  INPUT: Raw Bitmap (2448×2048) from camera                      │
+└─────────────┬───────────────────────────────────────────────────┘
+              │
+              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  STAGE 1: Geometric Measurement (OringMeasurement.Measure)      │
+│  • Grayscale → background subtraction → morphological cleanup   │
+│  • Contour detection (RETR_CCOMP, 2-level hierarchy)            │
+│  • Outer contour = largest by area                              │
+│  • Inner contour = largest child of outer                       │
+│  • Least-squares circle fit on both contours                    │
+│  • Compute 6 metrics                                            │
+│  ► If no contours found → return ERROR                          │
+└─────────────┬───────────────────────────────────────────────────┘
+              │ GeometricResult (6 metrics)
+              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  STAGE 2: Threshold Evaluation (ThresholdConfig.Evaluate)       │
+│  • Normalize pixel metrics by resolution scale                  │
+│  • Compare each metric to its lo/hi range                       │
+│  • Classify failures as "rework" or "reject"                    │
+│  ► If any rework metric fails → return REWORK                   │
+│  ► If any reject metric fails → return REJECT                   │
+└─────────────┬───────────────────────────────────────────────────┘
+              │ Geometric PASS → branch by detector type
+              ▼
+      ┌───────┴───────┐
+      │               │
+      ▼               ▼
+┌──────────────┐ ┌──────────────────┐
+│  CAM 1, 3    │ │  CAM 2, 4        │
+│  Mask R-CNN  │ │  PatchCore       │
+└──────┬───────┘ └──────┬───────────┘
+       │                │
+       ▼                ▼
+┌──────────────┐ ┌──────────────────┐
+│ BinCrop720   │ │ BinCrop720       │
+│ 720×720      │ │ → Resize 660     │
+│              │ │ → CenterCrop 640 │
+└──────┬───────┘ └──────┬───────────┘
+       │                │
+       ▼                ▼
+┌──────────────┐ ┌──────────────────┐
+│ ONNX Infer.  │ │ ONNX Inference   │
+│ boxes/masks  │ │ score + heatmap  │
+│ score > 0.5? │ │ score > thresh?  │
+└──────┬───────┘ └──────┬───────────┘
+       │                │
+       ▼                ▼
+┌──────────────────────────────────┐
+│  VERDICT:                        │
+│  • Defects/anomaly → REJECT      │
+│  • Clean           → PASS        │
+└──────────────────────────────────┘
+       │
+       ▼
+┌──────────────────────────────────┐
+│  Modbus: Write rejection coils   │
+│  Coil 0 = CAM1+2, Coil 1 = CAM3+4│
+└──────────────────────────────────┘
 ```
 
-**Key code locations:**
-- `InspectionService.InspectMaskRCNN()` � lines 148�198
-- `InspectionService.InspectPatchCore()` � lines 203�251
-- `InspectionService.RunGeoEvaluation()` � lines 98�143 (shared by both)
+---
+
+## 6. Geometric Measurement (Stage 1)
+
+### What Is Measured
+
+| # | Metric               | How It's Computed                                                      | Unit |
+|---|----------------------|------------------------------------------------------------------------|------|
+| 1 | **Outer Radius**     | Least-squares circle fit on the largest contour                        | px   |
+| 2 | **Inner Radius**     | Least-squares circle fit on the largest child contour of the outer     | px   |
+| 3 | **Outer Circularity**| `4π × area / perimeter²` of the outer contour (1.0 = perfect circle)  | —    |
+| 4 | **Inner Circularity**| `4π × area / perimeter²` of the inner contour                         | —    |
+| 5 | **Center Distance**  | Euclidean distance between outer and inner fitted circle centers       | px   |
+| 6 | **Eccentricity %**   | `center_distance / average_radius × 100`                              | %    |
+
+### Image Processing Steps
+
+1. Convert to grayscale.
+2. Compute absolute difference from background value (default 24).
+3. Threshold to binary mask.
+4. If >75% foreground, invert (handles light-on-dark vs dark-on-light).
+5. Morphological close (2 iterations) + open (1 iteration) with 7×7 elliptical kernel.
+6. Keep only the largest connected component.
+7. Find contours with `RETR_CCOMP` (2-level hierarchy: outer + holes).
+
+### Circle Fitting
+
+Uses an algebraic least-squares fit that solves a 3×3 linear system (Gaussian elimination with partial pivoting). This is a direct port of `fit_circle_lsq()` from the Python reference implementation.
 
 ---
 
-## 6. File-by-File Reference
+## 7. Threshold Evaluation (Stage 2)
 
-### `MainWindow.xaml.cs` � The UI Orchestrator (START HERE)
+### The 6 Metrics and Their Verdict Categories
 
-This is the **main control hub**. Every user action flows through here.
+| Metric               | Category     | Threshold Type | Fail Condition                    |
+|----------------------|-------------|----------------|-----------------------------------|
+| `outer_radius`       | **rework**  | range          | Value > Hi (too large)            |
+| `inner_radius`       | **rework**  | range          | Value < Lo (too small)            |
+| `circularity_outer`  | **rework**  | min            | Value < Lo (not round enough)     |
+| `circularity_inner`  | **rework**  | min            | Value < Lo (not round enough)     |
+| `center_dist`        | **reject**  | max            | Value > Hi (centers too far apart)|
+| `eccentricity_pct`   | **reject**  | max            | Value > Hi (too eccentric)        |
 
-| Region / Method            | What It Does                                                  |
-|----------------------------|---------------------------------------------------------------|
-| Fields (lines 29�43)       | References to all services, camera labels, detector assignments|
-| `MainWindow()` constructor | Wires up named XAML elements, starts the clock timer           |
-| `Window_Loaded`            | Loads ONNX models on a background thread (3-min timeout)       |
-| `Model1_Click/Model2_Click`| Switches threshold config + PatchCore model                    |
-| `Cam2_Click/Cam4_Click`   | Toggles between 2-camera and 4-camera layout                  |
-| `Row1/Row2 MaskRCNN/PatchCore_Click` | Changes which detector each row uses          |
-| `LoadImage_Click`          | Opens file dialog, loads image for manual analysis             |
-| `Stream_Click`             | Starts/stops camera streaming (Mode 2)                        |
-| `StreamTimer_Tick`         | Auto-analysis tick during streaming (every 500ms)              |
-| `Analyze_Click`            | Manual analysis trigger (works in Mode 1 and Mode 2)           |
-| `UpdateAnalysisResults`    | Displays results, updates verdicts, writes Modbus coils        |
-| `ModbusConnect/Disconnect_Click` | Manual Modbus RS-485 connection                          |
-| `TriggerStart/Stop_Click`  | Starts/stops Modbus trigger mode (Mode 3)                     |
-| `OnTriggerResult`          | Callback from TriggerService ? updates UI with trigger results |
-
-### `MainWindow.xaml` � The UI Layout
-
-| Section (approx. lines) | Content                                                       |
-|--------------------------|---------------------------------------------------------------|
-| 11�87                    | Styles: ActionButton, ModelToggle, ImageFrame                 |
-| 89�180                   | Left panel: 2�2 camera grid with labels + verdict overlays    |
-| 182�229                  | Right panel: action buttons, overlay checkbox, camera mode     |
-| 231�262                  | Model Selection (Model 1 / Model 2 toggle)                    |
-| 264�311                  | Detector Assignment (Row 1 / Row 2 toggle: MaskRCNN/PatchCore)|
-| 313�321                  | Verdict banner                                                |
-| 323�389                  | Geometric Metrics table (bound to MetricsPanel ItemsControl)  |
-| 391�400                  | Timing display + details text                                 |
-| 402�489                  | Modbus RS-485 configuration (COM port, baud, slave, coils)    |
-| 491�520                  | Modbus Trigger Mode (start/stop + status)                     |
-
-### `InspectionService.cs` � The Pipeline Orchestrator
-
-| Member                      | Role                                                          |
-|-----------------------------|---------------------------------------------------------------|
-| Constructor                 | Creates MaskRCNNDetector + PatchCoreDetector, loads thresholds |
-| `InspectMaskRCNN(Bitmap)`   | Full pipeline using Mask R-CNN as the detector                 |
-| `InspectPatchCore(Bitmap)`  | Full pipeline using PatchCore as the detector                  |
-| `RunGeoEvaluation()`        | Shared Stage 1+2: geometry + threshold evaluation              |
-| `SwitchModel(name)`         | Hot-swaps thresholds + PatchCore model                         |
-| `DrawDefectOverlay()`       | Red tint on Mask R-CNN defect pixels + score labels            |
-| `BitmapToBitmapSource()`    | GDI+ Bitmap ? WPF BitmapSource (frozen for thread safety)     |
-| `InspectionResult` class    | Data carrier: verdict, metrics, detections, timing, overlay    |
-
-### `OringMeasurement.cs` � Geometric Analysis (OpenCV)
-
-| Method                   | Role                                                           |
-|--------------------------|----------------------------------------------------------------|
-| `Measure(Bitmap)`        | Full pipeline: grayscale ? mask ? contours ? circle fit ? 6 metrics |
-| `BinCrop720(Bitmap)`     | Downscale 2�2, crop to foreground, resize/pad to 720�720       |
-| `DrawGeometricOverlay()` | Draws fitted circles (green=outer, red=inner) + center line    |
-| `BuildMask()`            | Background subtraction ? threshold ? morphology ? largest comp |
-| `FitCircleLsq()`         | Algebraic least-squares circle fit (3�3 linear solve)          |
-
-### `ThresholdConfig.cs` � Metric Definitions & Evaluation
-
-| Member                    | Role                                                          |
-|---------------------------|---------------------------------------------------------------|
-| `MetricDefs[]`            | 6 metric definitions with name, unit, threshold type, category |
-| `LoadThresholds(json)`    | Reads lo/hi from JSON, fills missing with defaults, widens reject by 10% |
-| `Evaluate()`              | Compares each metric ? per-metric pass/fail + overall verdict  |
-| `ComputeResolutionScale()`| Scale factor for normalizing to reference 2448px resolution    |
-
-### `MaskRCNNDetector.cs` � Mask R-CNN ONNX Inference
-
-| Member                    | Role                                                          |
-|---------------------------|---------------------------------------------------------------|
-| Constructor               | GPU init pipeline: path setup ? DLL probe ? version check ? session ? 3-pass warmup |
-| `Detect(Bitmap, threshold)`| Bitmap ? [1,3,720,720] tensor ? inference ? Detection list   |
-| `EnsureNvidiaLibsOnPath()`| Adds pip-installed NVIDIA lib paths to PATH at runtime         |
-| `LogDiag()`               | Writes to `gpu_init.log` � **your first stop for GPU issues** |
-
-### `PatchCoreDetector.cs` � PatchCore ONNX Inference
-
-| Member                    | Role                                                          |
-|---------------------------|---------------------------------------------------------------|
-| `LoadModel(path, threshold)` | Loads ONNX model, attempts CUDA, falls back to CPU          |
-| `Detect(Bitmap)`          | Bitmap ? [1,3,640,640] tensor ? inference ? anomaly score + map|
-| `Preprocess(Bitmap)`      | Resize to 660 ? center-crop to 640�640                        |
-| `DrawHeatmapOverlay()`    | Colorizes anomaly map as a red-yellow heatmap overlay          |
-| `LoadMetadata(json)`      | Reads recommended_threshold from JSON sidecar file             |
-
-### `CameraManager.cs` � HikRobot Camera Integration
-
-| Member                    | Role                                                          |
-|---------------------------|---------------------------------------------------------------|
-| `Initialize()`            | Enumerates all GigE/USB/GenTL cameras via MVS SDK              |
-| `StartStreaming()`        | Opens cameras, starts continuous grab threads                  |
-| `GetLatestFrame(slot)`    | Returns the most recent Bitmap from a specific camera          |
-| `GetAllLatestFrames()`    | Returns latest frames from all cameras as an array             |
-| `StopStreaming()`         | Stops acquisition, closes devices                              |
-
-### `ModbusService.cs` � Modbus RTU Communication
-
-| Member                    | Role                                                          |
-|---------------------------|---------------------------------------------------------------|
-| `Connect(com, baud, slave)` | Opens serial port, creates NModbus RTU master                |
-| `WriteRejectionCoils()`   | Writes 2 coils: CAM1+2 reject, CAM3+4 reject                 |
-| `WriteSingleCoil()`       | Writes a single coil value (used by TriggerService)            |
-| `ReadCoils(addr, count)`  | Reads input coils from slave (used by TriggerService producer) |
-| `GetAvailablePorts()`     | Lists COM ports for the UI dropdown                            |
-
-### `TriggerService.cs` � Producer-Consumer Trigger Pipeline
-
-| Member / Thread           | Role                                                          |
-|---------------------------|---------------------------------------------------------------|
-| `TriggerConfig` class     | Data model for `trigger_config.json`                          |
-| `ProducerLoop` (background thread) | Polls two Modbus coils, edge-detects LOW?HIGH, enqueues `TriggerEvent` |
-| `ConsumerLoop` (background thread) | Dequeues events, captures camera frames, runs inspection, writes output coils |
-| `ProcessTrigger()`        | The actual work: grab frames ? inspect ? write Modbus ? callback |
-| `_onResult` callback      | Posts `TriggerResultEvent` back to UI thread via `Dispatcher.BeginInvoke` |
-
----
-
-## 7. Geometric Measurement (Stage 1)
-
-### The 6 Metrics
-
-| # | Metric               | Computation                                                    | Unit |
-|---|----------------------|----------------------------------------------------------------|------|
-| 1 | **Outer Radius**     | Least-squares circle fit on largest contour                    | px   |
-| 2 | **Inner Radius**     | Least-squares circle fit on largest child contour of outer     | px   |
-| 3 | **Outer Circularity**| `4? � area / perimeter�` of outer contour (1.0 = perfect)     | �    |
-| 4 | **Inner Circularity**| `4? � area / perimeter�` of inner contour                     | �    |
-| 5 | **Center Distance**  | Euclidean distance between fitted circle centers               | px   |
-| 6 | **Eccentricity %**   | `center_distance / average_radius � 100`                      | %    |
-
-### Image Processing Steps (inside `Measure()`)
-
-1. Convert to grayscale
-2. Absolute difference from background value (default 24)
-3. Threshold to binary mask
-4. If >75% foreground, invert (handles light-on-dark)
-5. Morphological close (2 iterations) + open (1 iteration) with 7�7 elliptical kernel
-6. Keep only the largest connected component
-7. Find contours with `RETR_CCOMP` (2-level hierarchy: outer + holes)
-8. Outer = largest by area; Inner = largest child of outer
-9. Fit circles via algebraic least-squares (3�3 Gaussian elimination)
-
----
-
-## 8. Threshold Evaluation (Stage 2)
-
-### Metric ? Verdict Mapping
-
-| Metric               | Category     | Threshold Type | Fail Condition             |
-|----------------------|-------------|----------------|----------------------------|
-| `outer_radius`       | **rework**  | range          | Value > Hi (too large)     |
-| `inner_radius`       | **rework**  | range          | Value < Lo (too small)     |
-| `circularity_outer`  | **rework**  | min            | Value < Lo (not round)     |
-| `circularity_inner`  | **rework**  | min            | Value < Lo (not round)     |
-| `center_dist`        | **reject**  | max            | Value > Hi (off-center)    |
-| `eccentricity_pct`   | **reject**  | max            | Value > Hi (too eccentric) |
-
-### Default Thresholds (reference 2448px)
+### Default Thresholds (reference resolution 2448px)
 
 | Metric               | Lo     | Hi     |
 |----------------------|--------|--------|
@@ -394,259 +371,308 @@ This is the **main control hub**. Every user action flows through here.
 | `center_dist`        | 0.0    | 35.0   |
 | `eccentricity_pct`   | 0.0    | 6.0    |
 
+### Threshold JSON Files
+
+The JSON files (e.g., `model1_tuned_thresholds.json`) contain **18 metrics** including
+`ring_thickness`, `mean_thickness`, `thickness_cv`, `annular_area_k`, `edge_clearance`, etc.
+However, **only 6 are loaded** by the app — the rest exist for the Python training pipeline
+and are silently ignored.
+
 ### Threshold Loading Logic
 
-1. Read JSON file (`model1_tuned_thresholds.json` or `model2_tuned_thresholds.json`)
-2. Fill missing metrics with defaults
-3. **Widen reject thresholds by 10%** (Lo � 0.9, Hi � 1.1)
+1. Read `model1_tuned_thresholds.json` or `model2_tuned_thresholds.json` based on selected model.
+2. Fill any missing metrics with defaults.
+3. **Widen reject thresholds by 10%** (Lo × 0.9, Hi × 1.1) — matches the Python reference behavior.
 
 ### Resolution Normalization
 
-Linear metrics (`outer_radius`, `inner_radius`, `center_dist`) are divided by:
+Linear metrics (`outer_radius`, `inner_radius`, `center_dist`) are divided by a scale factor:
+
 ```
 scale = max(image_width, image_height) / 2448
 ```
 
+Dimensionless metrics (`circularity`, `eccentricity_pct`) are **not** scaled.
+
 ### Verdict Priority
 
 ```
-REWORK checked first ? if any rework metric fails ? REWORK
-Then REJECT ? if any reject metric fails ? REJECT
-Otherwise ? PASS (proceed to AI detector)
+if any rework metric fails → REWORK  (checked first)
+else if any reject metric fails → REJECT
+else → PASS (proceed to defect detection)
+```
+
+REWORK takes priority over REJECT because a geometrically deformed ring should be flagged for rework
+before checking structural/eccentricity issues.
+
+---
+
+## 8. Defect Detection — Dual Detector Architecture (Stages 3–4)
+
+The system uses **two different AI models** assigned to alternating cameras:
+
+| Camera  | Detector        | Input Size | Detection Method               |
+|---------|-----------------|------------|--------------------------------|
+| CAM 1   | Mask R-CNN      | 720×720    | Instance segmentation (masks)  |
+| CAM 2   | PatchCore       | 640×640    | Anomaly score + heatmap        |
+| CAM 3   | Mask R-CNN      | 720×720    | Instance segmentation (masks)  |
+| CAM 4   | PatchCore       | 640×640    | Anomaly score + heatmap        |
+
+### 8a. Mask R-CNN Path (CAM 1, 3)
+
+**When:** Geometry passes. **Image prep:** `BinCrop720` → 720×720.
+
+1. Lock bitmap bits, extract BGR pixel data.
+2. Convert to **CHW RGB float [0..1]** in a `ThreadLocal<float[]>` buffer.
+3. Wrap as `DenseTensor<float>` shape `[1, 3, 720, 720]`.
+4. Run `InferenceSession.Run()` (CUDA EP).
+5. Parse outputs: `boxes[N,4]`, `labels[N]`, `scores[N]`, `masks[N,1,H,W]`.
+6. Filter by `scoreThreshold` (0.5). Max 5 detections.
+7. If any detection → **REJECT** with red-tinted mask overlay + score labels.
+
+### 8b. PatchCore Path (CAM 2, 4)
+
+**When:** Geometry passes. **Image prep:** `BinCrop720` → 720×720 → resize 660 → center-crop 640×640.
+
+1. Same BGR → CHW RGB float conversion.
+2. Tensor shape `[1, 3, 640, 640]`.
+3. Run inference → outputs: `anomaly_score [1]` + `anomaly_map [1, 1, 640, 640]`.
+4. Handles both FP32 and FP16 output tensors (model is FP16, runtime auto-converts).
+5. If `anomaly_score > threshold` → **REJECT** with jet-colormap heatmap overlay.
+
+PatchCore threshold is loaded from the model's JSON metadata file
+(e.g., `patchcore_model2_resnet50_fp16_ablation.json` → `recommended_threshold`).
+
+### Why Two Detectors?
+
+Mask R-CNN is supervised (trained on labeled defect masks) — good for known defect types.
+PatchCore is unsupervised (trained only on "good" images) — catches novel/unexpected anomalies.
+Using both on different cameras provides complementary coverage.
+
+---
+
+## 9. Verdict Decision Matrix
+
+| Condition                                                     | Verdict      | Overlay Shown                   |
+|---------------------------------------------------------------|-------------|----------------------------------|
+| Contours not detected                                         | **ERROR**   | Raw image                        |
+| Outer radius too large                                        | **REWORK**  | Geometric overlay (fitted circles)|
+| Inner radius too small                                        | **REWORK**  | Geometric overlay (fitted circles)|
+| Outer or inner circularity too low                            | **REWORK**  | Geometric overlay (fitted circles)|
+| Center distance too large                                     | **REJECT**  | Geometric overlay (fitted circles)|
+| Eccentricity too high                                         | **REJECT**  | Geometric overlay (fitted circles)|
+| Geometry OK + Mask R-CNN finds ≥1 defect (score > 0.5)       | **REJECT**  | Red-tinted defect mask overlay   |
+| Geometry OK + PatchCore anomaly score > threshold             | **REJECT**  | Jet-colormap heatmap overlay     |
+| Geometry OK + no defects/anomalies                            | **PASS**    | Raw image (unchanged)            |
+| PatchCore model not loaded                                    | **ERROR**   | Raw image                        |
+
+---
+
+## 10. Multi-Camera Batch Processing
+
+The system supports **2-camera** or **4-camera** modes (toggled via UI buttons).
+
+### Static Image Analysis ("Analyze" button)
+
+1. The loaded image is copied N times (N = 2 or 4).
+2. `Parallel.For(0, N, ...)` runs inspection concurrently:
+   - **Even indices (0, 2)** → `InspectMaskRCNN()`
+   - **Odd indices (1, 3)** → `InspectPatchCore()`
+3. Each frame gets its own overlay image and per-tile verdict label.
+4. The **first frame's** detailed results populate the metric table.
+5. Batch timing summary shows per-camera and average stats.
+
+### Camera Assignment
+
+```
+CAM 1 (index 0) → Mask R-CNN   ┐
+CAM 2 (index 1) → PatchCore    ┤ → Coil 0 (reject if either ≠ PASS)
+                                │
+CAM 3 (index 2) → Mask R-CNN   ┤
+CAM 4 (index 3) → PatchCore    ┘ → Coil 1 (reject if either ≠ PASS)
 ```
 
 ---
 
-## 9. Mask R-CNN Defect Detection
+## 11. Live Camera Streaming
 
-- **Model input:** `[1, 3, 720, 720]` float tensor (RGB, 0�1)
-- **Model output:** boxes `[N,4]`, labels `[N]`, scores `[N]`, masks `[N,1,H,W]`
-- **Classes:** 0 = background, 1 = defect
-- **Score threshold:** 0.5 (configurable). Max 5 detections returned.
-- **Image prep:** `OringMeasurement.BinCrop720()` � 2�2 bin, foreground crop, resize/pad to 720�720
-- **If defects found ? REJECT** with red-tinted defect overlay
-- **If no defects ? PASS**
+### `CameraManager.cs` Architecture
 
----
+- Enumerates all HikRobot cameras (GigE, USB, GenTL) via the MVS SDK.
+- Opens each camera in **continuous acquisition mode** (no external trigger).
+- Each camera gets a dedicated **background grab thread** (`GrabThreadProc`).
+- Latest frame per slot is stored in a lock-protected `Bitmap` reference.
+- GigE cameras get optimal packet size auto-configured.
 
-## 10. PatchCore Anomaly Detection
+### Streaming Loop
 
-- **Model input:** `[1, 3, 640, 640]` float tensor (RGB, 0�1)
-- **Model output:** `anomaly_score [1]` + `anomaly_map [1,1,640,640]`
-- **Threshold:** Loaded from `patchcore_modelN_resnet50.json` (`recommended_threshold` field)
-- **Image prep:** BinCrop720 ? resize to 660 ? center-crop to 640�640
-- **If score > threshold ? REJECT** with heatmap overlay
-- **If score ? threshold ? PASS**
+The UI uses a `DispatcherTimer` (500ms interval) that:
 
----
+1. Polls `GetAllLatestFrames()` from the camera manager.
+2. Displays raw frames in the UI.
+3. If all frames are ready, runs the full analysis pipeline (`Parallel.For` with
+   `InspectMaskRCNN`/`InspectPatchCore`).
+4. Updates overlays, verdicts, metric table, timing.
+5. Writes Modbus rejection coils.
+6. Timer is paused during analysis to prevent re-entrant ticks.
 
-## 11. Detector Assignment (Row-Based)
+### MVS Native Libraries
 
-The user can independently choose which AI detector each **row** of cameras uses.
-
-| UI Control                | Field               | Cameras Affected |
-|---------------------------|---------------------|------------------|
-| ROW 1 toggle (MaskRCNN/PatchCore) | `_row1Detector` | CAM 1 & CAM 2  |
-| ROW 2 toggle (MaskRCNN/PatchCore) | `_row2Detector` | CAM 3 & CAM 4  |
-
-**Defaults:** Row 1 = MaskRCNN, Row 2 = PatchCore
-
-The dispatch logic in `Analyze_Click`, `StreamTimer_Tick`, and `TriggerService.ProcessTrigger`:
-```csharp
-string detector = camIndex < 2 ? row1Detector : row2Detector;
-result = detector == "MaskRCNN"
-    ? _service.InspectMaskRCNN(frame)
-    : _service.InspectPatchCore(frame);
-```
-
-**WPF init gotcha:** The `Checked` event fires during `InitializeComponent()` when
-`IsChecked="True"` is set in XAML. At that point, sibling toggle buttons and `_camLabels`
-may not exist yet. All handlers have null guards for this reason.
+`CameraManager.EnsureMvsOnPath()` adds the MVS runtime directory
+(`C:\Program Files (x86)\Common Files\MVS\Runtime\Win64_x64`) to `PATH` at process level.
 
 ---
 
-## 12. Verdict Decision Matrix
+## 12. Modbus RS-485 PLC Integration
 
-| Condition                                          | Verdict      | Overlay                    |
-|----------------------------------------------------|-------------|----------------------------|
-| Contours not detected                              | **ERROR**   | Raw image                  |
-| PatchCore model not loaded                         | **ERROR**   | Raw image                  |
-| Camera frame not available                         | **ERROR**   | None                       |
-| Outer radius too large                             | **REWORK**  | Geometric (circles)        |
-| Inner radius too small                             | **REWORK**  | Geometric (circles)        |
-| Circularity too low (outer or inner)               | **REWORK**  | Geometric (circles)        |
-| Center distance too large                          | **REJECT**  | Geometric (circles)        |
-| Eccentricity too high                              | **REJECT**  | Geometric (circles)        |
-| Geometry OK + Mask R-CNN finds ?1 defect           | **REJECT**  | Defect mask (red tint)     |
-| Geometry OK + PatchCore score > threshold          | **REJECT**  | Anomaly heatmap            |
-| Geometry OK + no defects/anomalies                 | **PASS**    | Raw image                  |
+### Protocol
 
----
+- **Modbus RTU** over a USB-to-RS485 serial adapter.
+- Default: 9600 baud, 8N1, slave ID 1.
+- Configurable via UI panel (COM port dropdown, baud rate, slave ID, coil address).
 
-## 13. Camera Integration
+### Coil Layout
 
-`CameraManager` wraps the HikRobot MVS SDK:
+| Coil Address | Meaning                                     | Value |
+|-------------|---------------------------------------------|-------|
+| Base + 0     | CAM 1 + CAM 2 rejection                    | 1 = reject (either not PASS), 0 = both PASS |
+| Base + 1     | CAM 3 + CAM 4 rejection                    | 1 = reject (either not PASS), 0 = both PASS |
 
-- **Enumeration:** GigE, USB, GenTL, CXP, CameraLink, XoF device types
-- **Camera indices:** `CameraIndices = [0, 1, 2, 3]` � maps to physical camera order
-- **Streaming:** Each camera runs on its own background grab thread
-- **Thread safety:** Latest frame per camera protected by individual locks
-- **MVS Runtime path:** Hardcoded to `C:\Program Files (x86)\Common Files\MVS\Runtime\Win64_x64`,
-  added to PATH at runtime via `EnsureMvsOnPath()`
+### Timing
+
+Modbus writes are **fire-and-forget** on a background thread (`Task.Run`) to never block the UI.
+The result (success/error) is posted back to the UI via `Dispatcher.BeginInvoke`.
 
 ---
 
-## 14. Modbus RS-485 Communication
+## 13. GPU / CUDA Setup & Diagnostics
 
-Two separate Modbus uses in the application:
+### Multi-Step GPU Initialization (`MaskRCNNDetector`)
 
-### Manual Output (configured in UI)
-
-- COM port, baud rate, slave ID set via the Modbus RS-485 panel in the UI
-- After each analysis batch, writes 2 coils:
-  - Coil address+0: CAM 1+2 rejection (1 = at least one not PASS)
-  - Coil address+1: CAM 3+4 rejection (1 = at least one not PASS)
-- Fire-and-forget from `UpdateAnalysisResults`
-
-### Trigger Mode (configured in `trigger_config.json`)
-
-- Separate `ModbusService` instance created by `TriggerStart_Click`
-- Uses settings from JSON config file (COM port, baud, slave, coil addresses)
-- **Read:** Polls input coils (`TriggerCoil_Cam13`, `TriggerCoil_Cam24`)
-- **Write:** Single output coil per trigger pair (`OutputCoilAddress + 0` or `+ 1`)
-
----
-
-## 15. Trigger Service (Producer-Consumer)
+The constructor follows a 5-step pipeline, aborting to CPU at any failure:
 
 ```
-???????????????????     BlockingCollection<TriggerEvent>     ???????????????????
-?  PRODUCER THREAD ? ??????????????????????????????????????? ?  CONSUMER THREAD ?
-?                  ?         (bounded capacity: 16)           ?                  ?
-?  Polls Modbus    ?                                          ?  Captures frames ?
-?  input coils     ?                                          ?  Runs inference  ?
-?  every PollMs    ?                                          ?  Writes output   ?
-?  Edge-detects    ?                                          ?  coils           ?
-?  LOW ? HIGH      ?                                          ?  Calls _onResult ?
-???????????????????                                          ???????????????????
+Step 1 → EnsureNvidiaLibsOnPath()      — add cuDNN/cuBLAS paths
+Step 2 → ProbeNativeLibraries()        — LoadLibrary() on every critical DLL
+Step 3 → CheckVersionCompatibility()   — call cuDriverGetVersion / cudnnGetVersion
+Step 4 → Create InferenceSession       — with CUDA EP (may take 10-30s)
+Step 5 → RunWarmUp (3 passes)          — trigger cuDNN algo search (may take 60s+)
 ```
 
-### Producer (background thread: `ProducerLoop`)
+All steps are logged to `gpu_init.log` in the application directory.
 
-1. Read 2 coils from Modbus slave at `TriggerCoil_Cam13` and `TriggerCoil_Cam24`
-2. Compare current vs previous state
-3. If LOW ? HIGH transition detected, enqueue a `TriggerEvent(Type, Timestamp)`
-4. Sleep `PollIntervalMs` (default 200ms)
-
-### Consumer (background thread: `ConsumerLoop`)
-
-1. Dequeue `TriggerEvent` from `BlockingCollection`
-2. Wait `CaptureDelayMs` (default 50ms) for part to settle
-3. Determine camera slots: Cam13 ? [0, 2], Cam24 ? [1, 3]
-4. Grab latest frames from those cameras
-5. Run inspection using the row-based detector assignment
-6. Write output coil (rejection = NOT both PASS)
-7. Post `TriggerResultEvent` to UI via `_onResult` callback
-
----
-
-## 16. GPU / CUDA Setup
-
-### MaskRCNN Session (Exhaustive algo search)
+### Session Configuration (Both Detectors)
 
 ```
-CUDA EP: device_id=0, cudnn_conv_algo_search=EXHAUSTIVE,
-         cudnn_conv_use_max_workspace=1, arena_extend_strategy=kNextPowerOfTwo
-Warmup: 3 dummy inference passes with zero tensor
-```
+Mask R-CNN CUDA EP:
+  device_id = 0
+  cudnn_conv_algo_search = DEFAULT
+  cudnn_conv_use_max_workspace = 1
+  arena_extend_strategy = kSameAsRequested
 
-### PatchCore Session (Default algo search)
-
-```
-CUDA EP: device_id=0, cudnn_conv_algo_search=DEFAULT,
-         cudnn_conv_use_max_workspace=1, do_copy_in_default_stream=1
-Warmup: 1 dummy inference pass
+PatchCore CUDA EP:
+  device_id = 0
+  cudnn_conv_algo_search = DEFAULT
+  cudnn_conv_use_max_workspace = 1
+  arena_extend_strategy = kSameAsRequested
 ```
 
 ### Library Discovery
 
-`EnsureNvidiaLibsOnPath()` adds pip-installed NVIDIA library paths from
-`%USERPROFILE%\anaconda3\Lib\site-packages\nvidia\` (cuDNN, cuBLAS, cuFFT, etc.)
-to the `PATH` environment variable at runtime.
+`EnsureNvidiaLibsOnPath()` is a **public static** method on `MaskRCNNDetector` (shared with
+`PatchCoreDetector`). It prepends pip-installed NVIDIA library paths (cuDNN, cuBLAS, cuFFT,
+cuRAND, cuSOLVER, cuSPARSE) from `%USERPROFILE%\anaconda3\Lib\site-packages\nvidia\` to `PATH`.
+
+### Diagnostic Logging
+
+`MaskRCNNDetector.LogDiag(...)` writes timestamped lines to `gpu_init.log`. Both detectors
+use this shared logger. The log is recreated on each application startup.
 
 ### Fallback
 
-Both detectors fall back to CPU if CUDA initialization fails. Check:
-- `ActiveProvider` property: "CUDA (GPU)" or "CPU (CUDA unavailable)"
-- `GpuError` property: failure reason
-- `gpu_init.log` in the app directory: full diagnostic trace
+If any GPU initialization step fails, the detector falls back to CPU automatically.
+`ActiveProvider` reflects the actual state (e.g., `"CPU (GPU warmup failed)"`).
+`GpuError` stores the failure message for UI display.
 
 ---
 
-## 17. Common Debugging Scenarios
+## 14. Data Flow Diagram
 
-### "Where do I look when X happens?"
-
-| Problem                                  | Start Here                                                |
-|------------------------------------------|-----------------------------------------------------------|
-| App crashes on startup                   | `Window_Loaded` in MainWindow.xaml.cs + `gpu_init.log`    |
-| Model fails to load                      | `MaskRCNNDetector` constructor ? `TryInitGpu()` ? `gpu_init.log` |
-| NullReferenceException during init       | XAML `Checked` events firing during `InitializeComponent()` � check null guards in Row/Cam toggle handlers |
-| Wrong verdict (should be PASS but REJECT)| `ThresholdConfig.Evaluate()` � check thresholds in JSON files |
-| Cameras not found                        | `CameraManager.Initialize()` � check MVS SDK path, `EnsureMvsOnPath()` |
-| Modbus write fails                       | `ModbusService.WriteRejectionCoils()` � check `LastError` |
-| Trigger mode not firing                  | `TriggerService.ProducerLoop()` � check coil addresses in `trigger_config.json` vs PLC config |
-| Trigger fires but no inspection          | `TriggerService.ProcessTrigger()` � check if cameras streaming & model loaded |
-| GPU inference slow after first run       | MaskRCNN uses EXHAUSTIVE cudnn search on first warmup � expected |
-| PatchCore says ERROR                     | Check if `patchcore_modelN_resnet50_fp16.onnx` exists in output dir |
-| Overlay not showing                      | Check [Show Overlay] checkbox (`ChkShowOverlay.IsChecked`) |
-
-### Key Log Files
-
-| File             | Location              | Content                                |
-|------------------|-----------------------|----------------------------------------|
-| `gpu_init.log`   | App base directory    | Full GPU initialization diagnostics    |
-
-### Thread Model
-
-| Thread                     | What It Does                              |
-|----------------------------|-------------------------------------------|
-| UI (Dispatcher)            | All WPF rendering, button handlers         |
-| Task.Run / Parallel.For    | Inspection pipeline (Mode 1 & 2)           |
-| CameraManager grab threads | One per camera, continuous frame capture    |
-| TriggerProducer            | Polls Modbus input coils                   |
-| TriggerConsumer            | Processes triggers, runs inference          |
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                         APPLICATION STARTUP                      │
+│  1. Load Mask R-CNN ONNX (GPU init + warmup)                    │
+│  2. Load PatchCore ONNX for selected model (GPU init + warmup)  │
+│  3. Load geometric thresholds from JSON                          │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │
+              ┌────────────┴────────────┐
+              ▼                         ▼
+   ┌──────────────────┐     ┌────────────────────┐
+   │  "Load Image"    │     │  "Start Stream"    │
+   │  (file dialog)   │     │  (HikRobot cameras)│
+   └────────┬─────────┘     └────────┬───────────┘
+            │                        │
+            ▼                        ▼
+   ┌──────────────────┐     ┌────────────────────┐
+   │  "Analyze"       │     │  DispatcherTimer   │
+   │  (manual click)  │     │  (auto every 500ms)│
+   └────────┬─────────┘     └────────┬───────────┘
+            │                        │
+            └────────────┬───────────┘
+                         ▼
+              ┌──────────────────────────────────┐
+              │  Parallel.For(0, N)               │
+              │  ┌─────────────────────────────┐  │
+              │  │ Even CAM: InspectMaskRCNN() │  │
+              │  │  ├─ Measure (OpenCV)        │  │
+              │  │  ├─ Evaluate thresholds     │  │
+              │  │  ├─ BinCrop720              │  │
+              │  │  └─ Mask R-CNN (ONNX GPU)   │  │
+              │  └─────────────────────────────┘  │
+              │  ┌─────────────────────────────┐  │
+              │  │ Odd CAM: InspectPatchCore() │  │
+              │  │  ├─ Measure (OpenCV)        │  │
+              │  │  ├─ Evaluate thresholds     │  │
+              │  │  ├─ BinCrop720 + Crop640    │  │
+              │  │  └─ PatchCore (ONNX GPU)    │  │
+              │  └─────────────────────────────┘  │
+              └──────────────┬───────────────────┘
+                             │
+                             ▼
+              ┌──────────────────────────────────┐
+              │  UI Thread:                       │
+              │  ├─ Per-frame overlay images      │
+              │  ├─ Per-frame verdict labels      │
+              │  ├─ Metric table (CAM 1 details)  │
+              │  ├─ PatchCore anomaly scores      │
+              │  └─ Timing breakdown              │
+              └──────────────┬───────────────────┘
+                             │
+                             ▼
+              ┌──────────────────────────────────┐
+              │  Modbus (background thread):      │
+              │  ├─ Coil 0: CAM1+2 reject?       │
+              │  └─ Coil 1: CAM3+4 reject?       │
+              └──────────────────────────────────┘
+```
 
 ---
 
-## 18. Recommended Reading Order
+## 15. Where to Start Reading
 
-Read the files in this order to build understanding from the top down:
+**Recommended reading order for a new developer:**
 
-| Order | File                       | Why                                                                      |
-|-------|----------------------------|--------------------------------------------------------------------------|
-| **1** | **`MainWindow.xaml.cs`**   | **The control hub.** Every user action and all 3 operating modes start here. Read `Analyze_Click` first to see the simplest flow. Then `StreamTimer_Tick` for auto-analysis. Then `TriggerStart_Click` + `OnTriggerResult` for trigger mode. |
-| **2** | **`InspectionService.cs`** | **The pipeline.** Read `InspectMaskRCNN()` and `InspectPatchCore()` to see the full Stage 1?4 flow. They both call `RunGeoEvaluation()` for the shared geometry stage. |
-| **3** | **`ThresholdConfig.cs`**   | **The decision logic.** Understand the 6 metrics, how thresholds load from JSON, and how `Evaluate()` decides REWORK/REJECT/PASS. |
-| **4** | **`OringMeasurement.cs`**  | **The computer vision.** How the 6 metrics are computed from raw images. Read `Measure()` and `BinCrop720()`. |
-| **5** | **`MaskRCNNDetector.cs`**  | **Deep learning path 1.** ONNX setup, CUDA init, tensor preparation, inference parsing. Also has `LogDiag()` used by the whole app. |
-| **6** | **`PatchCoreDetector.cs`** | **Deep learning path 2.** Similar structure to MaskRCNN but with anomaly score output instead of instance segmentation. |
-| **7** | **`TriggerService.cs`**    | **The automation layer.** Producer-consumer pattern, Modbus polling, edge detection. Only needed if you're working with PLC-triggered inspections. |
-| **8** | **`CameraManager.cs`**     | **Hardware integration.** HikRobot MVS SDK wrapper. Only needed if debugging camera issues. |
-| **9** | **`ModbusService.cs`**     | **PLC communication.** NModbus RTU wrapper. Only needed if debugging Modbus read/write issues. |
-| **10**| **`MainWindow.xaml`**      | **UI layout.** Read the sections list (Section 6) to know which part of the XAML corresponds to which feature. |
-| **11**| **`trigger_config.json`**  | **Trigger config.** Simple JSON � COM port, baud rate, coil addresses. |
-
-### "I just want to understand the verdict logic"
-
-Read only: `ThresholdConfig.cs` ? `InspectionService.RunGeoEvaluation()` ?
-`InspectionService.InspectMaskRCNN()` / `InspectPatchCore()`.
-
-### "I just want to understand the UI flow"
-
-Read only: `MainWindow.xaml.cs` � follow the three entry points:
-`Analyze_Click` (Mode 1), `StreamTimer_Tick` (Mode 2), `TriggerStart_Click` (Mode 3).
-
-### "I just want to understand the trigger pipeline"
-
-Read only: `trigger_config.json` ? `TriggerService.cs` ? `MainWindow.xaml.cs:TriggerStart_Click` + `OnTriggerResult`.
+| Order | File                     | Why                                                                              |
+|-------|--------------------------|----------------------------------------------------------------------------------|
+| 1     | `InspectionService.cs`   | The **orchestrator**. Read `InspectMaskRCNN()` and `InspectPatchCore()` — they call everything else. `RunGeoEvaluation()` is the shared geometry stage. |
+| 2     | `ThresholdConfig.cs`     | Understand the **6 metrics**, how thresholds work, and how REWORK/REJECT/PASS verdicts are decided from geometry alone. |
+| 3     | `OringMeasurement.cs`    | See how the **6 metrics are computed** from raw images using OpenCV (contours, circle fitting, circularity). |
+| 4     | `MaskRCNNDetector.cs`    | Understand the **Mask R-CNN inference** path: GPU init pipeline, tensor prep, output parsing. Also contains shared utilities (`LogDiag`, `EnsureNvidiaLibsOnPath`). |
+| 5     | `PatchCoreDetector.cs`   | Understand the **PatchCore anomaly detection** path: model loading, FP16 handling, heatmap overlay. |
+| 6     | `CameraManager.cs`       | See how **HikRobot cameras** are enumerated, opened, and streamed with per-camera grab threads. |
+| 7     | `ModbusService.cs`       | See how **rejection decisions are sent to the PLC** over RS-485 serial. |
+| 8     | `MainWindow.xaml.cs`     | See how the **UI ties everything together**: manual analysis, live streaming, model switching, Modbus panel. |
+| 9     | `MainWindow.xaml`        | Understand the **UI layout** (4-camera grid, metric table, verdict banner, Modbus config panel). |
+| 10    | `RoboViz.csproj`         | Check **dependencies** and build configuration. |
+| 11    | `README.md`              | **Setup prerequisites** (CUDA, cuDNN, drivers, MVS SDK). |

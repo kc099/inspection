@@ -1,6 +1,6 @@
 RoboViz/bin/
 RoboViz/obj/
 RoboViz/referencefiles/
-RoboViz/*.onnx
+RoboViz/Assets/*.onnx
 .vs/
 RoboViz/MvCameraControlNet_V2

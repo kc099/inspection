@@ -62,10 +62,10 @@ public class InspectionService : IDisposable
 
     private void LoadPatchCoreModel(string modelName, IProgress<string>? progress)
     {
-        string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+        string assetsDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets");
         string suffix = modelName == "Model 1" ? "model1" : "model2";
-        string onnxPath = Path.Combine(baseDir, $"patchcore_{suffix}_resnet50_fp16.onnx");
-        string jsonPath = Path.Combine(baseDir, $"patchcore_{suffix}_resnet50.json");
+        string onnxPath = Path.Combine(assetsDir, $"patchcore_{suffix}_resnet50_fp16.onnx");
+        string jsonPath = Path.Combine(assetsDir, $"patchcore_{suffix}_resnet50.json");
 
         if (!File.Exists(onnxPath))
         {
@@ -86,7 +86,7 @@ public class InspectionService : IDisposable
         string fileName = modelName == "Model 1"
             ? "model1_tuned_thresholds.json"
             : "model2_tuned_thresholds.json";
-        string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, fileName);
+        string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets", fileName);
         return ThresholdConfig.LoadThresholds(path);
     }
 
@@ -334,36 +334,4 @@ public class InspectionService : IDisposable
         _maskrcnn?.Dispose();
         _patchcore?.Dispose();
     }
-}
-
-public class InspectionResult
-{
-    public string DetectorType { get; set; } = "MaskRCNN";
-    public string Verdict { get; set; } = string.Empty;
-    public string? ErrorMessage { get; set; }
-    public List<string> FailReasons { get; set; } = [];
-
-    // Geometric
-    public GeometricResult? GeoResult { get; set; }
-    public List<MetricEvalResult> MetricResults { get; set; } = [];
-
-    // Mask R-CNN specific
-    public bool HasDefect { get; set; }
-    public List<Detection> Detections { get; set; } = [];
-    public float TopScore { get; set; }
-    public List<int> MaskPixelCounts { get; set; } = [];
-
-    // PatchCore specific
-    public float AnomalyScore { get; set; }
-    public float AnomalyThreshold { get; set; }
-
-    // Timing
-    public long TotalMs { get; set; }
-    public long GeoMs { get; set; }
-    public long PrepMs { get; set; }
-    public long TensorMs { get; set; }
-    public long InferenceMs { get; set; }
-    public long OverlayMs { get; set; }
-
-    public Bitmap? OverlayImage { get; set; }
 }

@@ -1,0 +1,157 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Windows;
+using System.Windows.Controls;
+
+namespace RoboViz;
+
+public partial class CameraSetupDialog : Window
+{
+    private readonly List<string> _cameraDescriptions;
+    private readonly ComboBox[] _combos;
+    private readonly RadioButton[] _detMR;
+    private readonly RadioButton[] _detPC;
+    private readonly RadioButton[] _trig1;
+    private readonly RadioButton[] _trig2;
+    private readonly TextBox[] _delays;
+
+    /// <summary>Result configs — populated on Start click, null if cancelled.</summary>
+    public CameraSlotConfig[]? ResultConfigs { get; private set; }
+
+    public CameraSetupDialog(List<string> cameraDescriptions, CameraSlotConfig[]? savedConfigs = null)
+    {
+        InitializeComponent();
+        _cameraDescriptions = cameraDescriptions;
+
+        _combos = [CmbCam0, CmbCam1, CmbCam2, CmbCam3];
+        _detMR  = [DetMR0, DetMR1, DetMR2, DetMR3];
+        _detPC  = [DetPC0, DetPC1, DetPC2, DetPC3];
+        _trig1  = [Trig1_0, Trig1_1, Trig1_2, Trig1_3];
+        _trig2  = [Trig2_0, Trig2_1, Trig2_2, Trig2_3];
+        _delays = [TxtDelay0, TxtDelay1, TxtDelay2, TxtDelay3];
+
+        PopulateCameraList();
+        PopulateCombos();
+
+        if (savedConfigs != null)
+            RestoreConfigs(savedConfigs);
+
+        UpdateSummary();
+
+        // Wire up change events for live summary updates
+        foreach (var cmb in _combos) cmb.SelectionChanged += (_, _) => UpdateSummary();
+        foreach (var rb in _trig1.Concat(_trig2)) rb.Checked += (_, _) => UpdateSummary();
+    }
+
+    private void PopulateCameraList()
+    {
+        if (_cameraDescriptions.Count == 0)
+        {
+            CameraListText.Text = "No cameras detected.";
+            BtnStart.IsEnabled = false;
+            return;
+        }
+
+        CameraListText.Text = string.Join("\n", _cameraDescriptions);
+    }
+
+    private void PopulateCombos()
+    {
+        for (int slot = 0; slot < 4; slot++)
+        {
+            _combos[slot].Items.Clear();
+            _combos[slot].Items.Add("(none)");
+            foreach (var desc in _cameraDescriptions)
+                _combos[slot].Items.Add(desc);
+
+            // Default: auto-assign by index if enough cameras
+            _combos[slot].SelectedIndex = slot < _cameraDescriptions.Count ? slot + 1 : 0;
+        }
+    }
+
+    private void RestoreConfigs(CameraSlotConfig[] configs)
+    {
+        foreach (var cfg in configs)
+        {
+            int s = cfg.Slot;
+            if (s < 0 || s >= 4) continue;
+
+            // Restore camera selection
+            if (cfg.DeviceIndex >= 0 && cfg.DeviceIndex < _cameraDescriptions.Count)
+                _combos[s].SelectedIndex = cfg.DeviceIndex + 1; // +1 for "(none)"
+            else
+                _combos[s].SelectedIndex = 0;
+
+            // Restore detector
+            if (cfg.Detector == "PatchCore")
+                _detPC[s].IsChecked = true;
+            else
+                _detMR[s].IsChecked = true;
+
+            // Restore trigger
+            if (cfg.TriggerGroup == 2)
+                _trig2[s].IsChecked = true;
+            else
+                _trig1[s].IsChecked = true;
+
+            // Restore delay
+            _delays[s].Text = cfg.CaptureDelayMs.ToString();
+        }
+    }
+
+    private CameraSlotConfig[] CollectConfigs()
+    {
+        var configs = new CameraSlotConfig[4];
+        for (int s = 0; s < 4; s++)
+        {
+            int comboIdx = _combos[s].SelectedIndex;
+            configs[s] = new CameraSlotConfig
+            {
+                Slot = s,
+                DeviceIndex = comboIdx > 0 ? comboIdx - 1 : -1,
+                Detector = _detPC[s].IsChecked == true ? "PatchCore" : "MaskRCNN",
+                TriggerGroup = _trig2[s].IsChecked == true ? 2 : 1,
+                CaptureDelayMs = int.TryParse(_delays[s].Text.Trim(), out int d) ? d : 50,
+            };
+        }
+        return configs;
+    }
+
+    private void UpdateSummary()
+    {
+        var configs = CollectConfigs();
+        int assigned = configs.Count(c => c.DeviceIndex >= 0);
+        int t1 = configs.Count(c => c.DeviceIndex >= 0 && c.TriggerGroup == 1);
+        int t2 = configs.Count(c => c.DeviceIndex >= 0 && c.TriggerGroup == 2);
+        int mr = configs.Count(c => c.DeviceIndex >= 0 && c.Detector == "MaskRCNN");
+        int pc = configs.Count(c => c.DeviceIndex >= 0 && c.Detector == "PatchCore");
+
+        SummaryText.Text = $"{assigned} camera(s) assigned  •  " +
+            $"Trigger 1: {t1} cam(s)  •  Trigger 2: {t2} cam(s)  •  " +
+            $"MaskRCNN: {mr}  •  PatchCore: {pc}";
+
+        BtnStart.IsEnabled = assigned > 0;
+    }
+
+    private void Start_Click(object sender, RoutedEventArgs e)
+    {
+        // Validate: no duplicate device assignments
+        var configs = CollectConfigs();
+        var assignedDevices = configs.Where(c => c.DeviceIndex >= 0).Select(c => c.DeviceIndex).ToArray();
+        if (assignedDevices.Length != assignedDevices.Distinct().Count())
+        {
+            MessageBox.Show("Each physical camera can only be assigned to one slot.",
+                "Duplicate Assignment", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        ResultConfigs = configs;
+        DialogResult = true;
+    }
+
+    private void Cancel_Click(object sender, RoutedEventArgs e)
+    {
+        DialogResult = false;
+    }
+}

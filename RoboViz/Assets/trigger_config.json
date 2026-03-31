@@ -1,11 +1,11 @@
 {
-  "ComPort": "COM6",
+  "ComPort": "COM7",
   "BaudRate": 115200,
   "SlaveId": 1,
   "TriggerCoil_Cam13": 3001,
   "TriggerCoil_Cam24": 3002,
   "OutputCoilAddress": 3003,
-  "CaptureDelayMs": 50,
+  "CaptureDelayMs": 400,
   "PollIntervalMs": 200
 }
 	

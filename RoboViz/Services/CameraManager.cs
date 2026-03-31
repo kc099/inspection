@@ -27,6 +27,7 @@ public class CameraManager : IDisposable
     private readonly List<IDeviceInfo> _deviceInfoList = [];
     private readonly IDevice?[] _devices;
     private readonly Bitmap?[] _latestFrames;
+    private readonly long[] _frameSequence; // Increments on every new frame
     private readonly object[] _frameLocks;
     private readonly Thread?[] _grabThreads;
     private readonly bool[] _grabbing;
@@ -37,6 +38,7 @@ public class CameraManager : IDisposable
         int count = CameraIndices.Length;
         _devices = new IDevice?[count];
         _latestFrames = new Bitmap?[count];
+        _frameSequence = new long[count];
         _frameLocks = new object[count];
         _grabThreads = new Thread?[count];
         _grabbing = new bool[count];
@@ -111,7 +113,7 @@ public class CameraManager : IDisposable
         for (int slot = 0; slot < CameraIndices.Length; slot++)
         {
             int camIdx = CameraIndices[slot];
-            if (camIdx >= _deviceInfoList.Count)
+            if (camIdx < 0 || camIdx >= _deviceInfoList.Count)
             {
                 progress?.Report($"CAM {slot + 1}: index {camIdx} not found (only {_deviceInfoList.Count} cameras)");
                 continue;
@@ -211,6 +213,19 @@ public class CameraManager : IDisposable
     }
 
     /// <summary>
+    /// Get the latest frame with its sequence number. Returns (null, 0) if no frame available.
+    /// Allows caller to detect if frame changed since last call.
+    /// </summary>
+    public (Bitmap? frame, long sequence) GetLatestFrameWithSequence(int slot)
+    {
+        if (slot < 0 || slot >= _latestFrames.Length) return (null, 0);
+        lock (_frameLocks[slot])
+        {
+            return (_latestFrames[slot] != null ? new Bitmap(_latestFrames[slot]!) : null, _frameSequence[slot]);
+        }
+    }
+
+    /// <summary>
     /// Get latest frames from all camera slots. Null entries for cameras not yet ready.
     /// </summary>
     public Bitmap?[] GetAllLatestFrames()
@@ -240,6 +255,7 @@ public class CameraManager : IDisposable
                         {
                             _latestFrames[slot]?.Dispose();
                             _latestFrames[slot] = bmp;
+                            _frameSequence[slot]++;
                         }
                     }
                 }

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -13,17 +14,6 @@ using Microsoft.Win32;
 
 namespace RoboViz
 {
-    public class MetricRowViewModel
-    {
-        public string Label { get; set; } = "";
-        public string ValueText { get; set; } = "";
-        public string LoText { get; set; } = "";
-        public string HiText { get; set; } = "";
-        public string StatusText { get; set; } = "";
-        public SolidColorBrush ValueColor { get; set; } = new(Colors.Gray);
-        public SolidColorBrush StatusColor { get; set; } = new(Colors.Gray);
-    }
-
     public partial class MainWindow : Window
     {
         private InspectionService? _service;
@@ -39,8 +29,20 @@ namespace RoboViz
         private TextBlock[] _camLabels = null!;
         private const int FrameCount = 4;
         private int _activeFrameCount = 4;
-        private string _row1Detector = "MaskRCNN";
-        private string _row2Detector = "PatchCore";
+
+        // Per-camera configuration (set via CameraSetupDialog)
+        private CameraSlotConfig[] _cameraSlots =
+        [
+            new() { Slot = 0, TriggerGroup = 1, Detector = "MaskRCNN",  CaptureDelayMs = 50 },
+            new() { Slot = 1, TriggerGroup = 1, Detector = "MaskRCNN",  CaptureDelayMs = 50 },
+            new() { Slot = 2, TriggerGroup = 1, Detector = "PatchCore", CaptureDelayMs = 50 },
+            new() { Slot = 3, TriggerGroup = 2, Detector = "PatchCore", CaptureDelayMs = 50 },
+        ];
+
+        // Frame sequence tracking for stream preview optimization
+        private readonly long[] _lastDisplayedSequence = new long[4];
+        private long _streamFrameCount;
+        private long _streamSkipCount;
 
         private static readonly SolidColorBrush PassGreen = new(System.Windows.Media.Color.FromRgb(76, 175, 80));
         private static readonly SolidColorBrush FailRed = new(System.Windows.Media.Color.FromRgb(244, 67, 54));
@@ -106,7 +108,7 @@ namespace RoboViz
                 var loadTask = Task.Run(() =>
                 {
                     string modelPath = Path.Combine(
-                        AppDomain.CurrentDomain.BaseDirectory, "maskrcnn_oring.onnx");
+                        AppDomain.CurrentDomain.BaseDirectory, "Assets", "maskrcnn_oring.onnx");
 
                     if (!File.Exists(modelPath))
                         throw new FileNotFoundException("ONNX model not found at: " + modelPath);
@@ -140,6 +142,12 @@ namespace RoboViz
                 }
 
                 PopulateMetricsTable();
+
+                // Initialize cameras (enumerate devices) but don't start streaming yet
+                await InitializeCamerasAsync(progress);
+
+                // Auto-start trigger mode (cameras will start streaming on-demand when trigger fires)
+                AutoStartTrigger();
             }
             catch (Exception ex)
             {
@@ -155,6 +163,155 @@ namespace RoboViz
                 }
                 catch { }
             }
+        }
+
+        /// <summary>
+        /// Auto-start camera streaming at app launch. Failures are non-fatal (logged to DetailsText).
+        /// </summary>
+        private async Task AutoStartCamerasAsync(IProgress<string>? progress)
+        {
+            try
+            {
+                progress?.Report("Initializing cameras...");
+                await StartCameraStreamAsync(progress);
+            }
+            catch (Exception ex)
+            {
+                DetailsText.Text += $"\nCamera auto-start failed: {ex.Message}";
+                MaskRCNNDetector.LogDiag($"[AutoStart] Camera init failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Initialize camera manager and enumerate devices WITHOUT starting streaming.
+        /// Cameras will start on-demand when first trigger fires.
+        /// </summary>
+        private async Task InitializeCamerasAsync(IProgress<string>? progress)
+        {
+            try
+            {
+                progress?.Report("Enumerating cameras...");
+                _cameraManager = new CameraManager();
+
+                int found = await Task.Run(() => _cameraManager.Initialize());
+                if (found == 0)
+                {
+                    progress?.Report("No cameras found");
+                    DetailsText.Text = "No cameras detected. Trigger mode will run without cameras (signal only).";
+                    return;
+                }
+
+                var descriptions = _cameraManager.GetCameraDescriptions();
+                DetailsText.Text = $"Found {found} camera(s) (ready for triggers):\n" + string.Join("\n", descriptions);
+                Debug.WriteLine($"[CameraInit] Found {found} camera(s), ready for on-demand capture.");
+                progress?.Report($"Cameras ready: {found} device(s)");
+            }
+            catch (Exception ex)
+            {
+                DetailsText.Text += $"\nCamera enumeration failed: {ex.Message}";
+                MaskRCNNDetector.LogDiag($"[CameraInit] Enumeration failed: {ex.Message}");
+                Debug.WriteLine($"[CameraInit] ERROR: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Auto-start trigger mode at app launch. Failures are non-fatal (logged to TriggerStatusText).
+        /// </summary>
+        private void AutoStartTrigger()
+        {
+            try
+            {
+                StartTriggerMode();
+            }
+            catch (Exception ex)
+            {
+                TriggerStatusText.Text = $"Auto-start failed: {ex.Message}";
+                TriggerStatusText.Foreground = ErrorRed;
+                DetailsText.Text += $"\n\nTRIGGER ERROR: {ex.Message}";
+                MaskRCNNDetector.LogDiag($"[AutoStart] Trigger init failed: {ex}");
+                Debug.WriteLine($"[AutoStart] Trigger FAILED: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Shared logic: initialize cameras, start streaming, start live-preview timer.
+        /// Returns true if cameras started successfully.
+        /// </summary>
+        private async Task<bool> StartCameraStreamAsync(IProgress<string>? progress)
+        {
+            if (_isStreaming) return true;
+
+            _cameraManager ??= new CameraManager();
+
+            int found = await Task.Run(() => _cameraManager.Initialize());
+            if (found == 0)
+            {
+                progress?.Report("No cameras found");
+                return false;
+            }
+
+            var descriptions = _cameraManager.GetCameraDescriptions();
+            DetailsText.Text = $"Found {found} camera(s):\n" + string.Join("\n", descriptions);
+
+            await Task.Run(() => _cameraManager.StartStreaming(progress));
+
+            _isStreaming = true;
+            BtnStream.Content = "Stop Stream";
+            BtnStream.Background = StreamStopRed;
+            BtnAnalyze.IsEnabled = _service != null;
+
+            progress?.Report(_service != null
+                ? $"Model: ready  [{_service.ActiveProvider}]  ({_service.CurrentModel}) | Cameras ready"
+                : "Cameras ready (no model)");
+            return true;
+        }
+
+        /// <summary>
+        /// Shared logic: load trigger config, connect Modbus, start TriggerService.
+        /// Throws on failure.
+        /// </summary>
+        private void StartTriggerMode()
+        {
+            if (_triggerService?.IsRunning == true) return;
+
+            var config = TriggerConfig.Load();
+
+            // Diagnostic: enumerate available COM ports
+            var availablePorts = ModbusService.GetAvailablePorts();
+            Debug.WriteLine($"[Trigger] Available COM ports: {string.Join(", ", availablePorts)}");
+            Debug.WriteLine($"[Trigger] Attempting to connect to {config.ComPort} @ {config.BaudRate} baud, slave {config.SlaveId}");
+
+            if (availablePorts.Length == 0)
+            {
+                throw new InvalidOperationException("No COM ports found on this system. Check USB-to-RS485 adapter connection.");
+            }
+
+            if (!availablePorts.Contains(config.ComPort))
+            {
+                string available = string.Join(", ", availablePorts);
+                throw new InvalidOperationException(
+                    $"COM port '{config.ComPort}' not found. Available ports: {available}. " +
+                    $"Update trigger_config.json or check device connections.");
+            }
+
+            var triggerModbus = new ModbusService();
+            if (!triggerModbus.Connect(config.ComPort, config.BaudRate, config.SlaveId))
+            {
+                string err = triggerModbus.LastError ?? "unknown error";
+                triggerModbus.Dispose();
+                throw new InvalidOperationException($"Modbus connect failed ({config.ComPort}): {err}");
+            }
+
+            _triggerService = new TriggerService(
+                triggerModbus, _cameraManager, _service, config, _cameraSlots,
+                result => Dispatcher.BeginInvoke(() => OnTriggerResult(result)));
+
+            _triggerService.Start();
+            BtnTriggerStart.IsEnabled = false;
+            BtnTriggerStop.IsEnabled = true;
+            TriggerStatusText.Text = $"Running \u2014 {config.ComPort} @ {config.BaudRate} " +
+                $"(slave {config.SlaveId}) | poll {config.PollIntervalMs}ms";
+            TriggerStatusText.Foreground = ReadyGreen;
         }
 
         private void Model1_Click(object sender, RoutedEventArgs e)
@@ -200,48 +357,36 @@ namespace RoboViz
             }
         }
 
-        private void Row1MaskRCNN_Click(object sender, RoutedEventArgs e)
-        {
-            if (BtnRow1PatchCore != null) BtnRow1PatchCore.IsChecked = false;
-            BtnRow1MaskRCNN.IsChecked = true;
-            _row1Detector = "MaskRCNN";
-            UpdateCameraLabels();
-        }
-
-        private void Row1PatchCore_Click(object sender, RoutedEventArgs e)
-        {
-            if (BtnRow1MaskRCNN != null) BtnRow1MaskRCNN.IsChecked = false;
-            BtnRow1PatchCore.IsChecked = true;
-            _row1Detector = "PatchCore";
-            UpdateCameraLabels();
-        }
-
-        private void Row2MaskRCNN_Click(object sender, RoutedEventArgs e)
-        {
-            if (BtnRow2PatchCore != null) BtnRow2PatchCore.IsChecked = false;
-            BtnRow2MaskRCNN.IsChecked = true;
-            _row2Detector = "MaskRCNN";
-            UpdateCameraLabels();
-        }
-
-        private void Row2PatchCore_Click(object sender, RoutedEventArgs e)
-        {
-            if (BtnRow2MaskRCNN != null) BtnRow2MaskRCNN.IsChecked = false;
-            BtnRow2PatchCore.IsChecked = true;
-            _row2Detector = "PatchCore";
-            UpdateCameraLabels();
-        }
-
         private void UpdateCameraLabels()
         {
             if (_camLabels == null) return;
-            string[] detectors = [_row1Detector, _row1Detector, _row2Detector, _row2Detector];
             for (int i = 0; i < FrameCount; i++)
-                _camLabels[i].Text = $"CAM {i + 1} [{detectors[i]}]";
+            {
+                var cfg = _cameraSlots[i];
+                string det = cfg.Detector == "MaskRCNN" ? "MRCNN" : "PCore";
+                string trig = $"T{cfg.TriggerGroup}";
+                _camLabels[i].Text = $"CAM {i + 1} [{det}] [{trig}]";
+            }
         }
 
         private string GetDetectorForCamera(int camIndex) =>
-            camIndex < 2 ? _row1Detector : _row2Detector;
+            _cameraSlots[camIndex].Detector;
+
+        private void UpdateCameraConfigSummary()
+        {
+            var lines = new List<string>();
+            for (int i = 0; i < 4; i++)
+            {
+                var cfg = _cameraSlots[i];
+                string det = cfg.Detector == "MaskRCNN" ? "MRCNN" : "PCore";
+                string dev = cfg.DeviceIndex >= 0 ? $"dev {cfg.DeviceIndex}" : "none";
+                lines.Add($"CAM {i + 1}: {dev} | {det} | T{cfg.TriggerGroup} | {cfg.CaptureDelayMs}ms");
+            }
+            int t1 = _cameraSlots.Count(c => c.DeviceIndex >= 0 && c.TriggerGroup == 1);
+            int t2 = _cameraSlots.Count(c => c.DeviceIndex >= 0 && c.TriggerGroup == 2);
+            lines.Add($"Trigger 1: {t1} cam(s)  •  Trigger 2: {t2} cam(s)");
+            CameraConfigText.Text = string.Join("\n", lines);
+        }
 
         private async void SwitchModel(string model)
         {
@@ -345,6 +490,18 @@ namespace RoboViz
         {
             if (_isStreaming)
             {
+                // Stop trigger first if running
+                if (_triggerService?.IsRunning == true)
+                {
+                    _triggerService.Stop();
+                    _triggerService.Dispose();
+                    _triggerService = null;
+                    BtnTriggerStart.IsEnabled = true;
+                    BtnTriggerStop.IsEnabled = false;
+                    TriggerStatusText.Text = "Stopped (stream stopped)";
+                    TriggerStatusText.Foreground = DimGray;
+                }
+
                 // Stop streaming
                 _streamTimer?.Stop();
                 _streamTimer = null;
@@ -358,21 +515,29 @@ namespace RoboViz
                 return;
             }
 
-            // Initialize cameras
             try
             {
-                StatusText.Text = "Initializing cameras...";
+                // Enumerate cameras if not done yet
                 _cameraManager ??= new CameraManager();
-
                 int found = await Task.Run(() => _cameraManager.Initialize());
-                if (found == 0)
-                {
-                    StatusText.Text = "No cameras found";
-                    return;
-                }
 
                 var descriptions = _cameraManager.GetCameraDescriptions();
-                DetailsText.Text = $"Found {found} camera(s):\n" + string.Join("\n", descriptions);
+                if (found == 0)
+                    descriptions = [];
+
+                // Show Camera Setup Dialog
+                var dialog = new CameraSetupDialog(descriptions, _cameraSlots) { Owner = this };
+                if (dialog.ShowDialog() != true || dialog.ResultConfigs == null)
+                    return;
+
+                // Apply the configuration
+                _cameraSlots = dialog.ResultConfigs;
+                CameraManager.CameraIndices = _cameraSlots
+                    .Select(c => c.DeviceIndex)
+                    .ToArray();
+
+                UpdateCameraLabels();
+                UpdateCameraConfigSummary();
 
                 var progress = new Progress<string>(s => StatusText.Text = s);
                 await Task.Run(() => _cameraManager.StartStreaming(progress));
@@ -382,10 +547,18 @@ namespace RoboViz
                 BtnStream.Background = StreamStopRed;
                 BtnAnalyze.IsEnabled = _service != null;
 
-                // Poll latest frames and auto-analyze
-                _streamTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+                ((IProgress<string>)progress).Report(_service != null
+                    ? $"Model: ready  [{_service.ActiveProvider}]  ({_service.CurrentModel}) | Cameras ready"
+                    : "Cameras ready (no model)");
+
+                // Start live preview timer
+                _streamTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
                 _streamTimer.Tick += StreamTimer_Tick;
                 _streamTimer.Start();
+                StatusText.Text += " | Live preview ON";
+
+                // Auto-start trigger when manually starting stream
+                AutoStartTrigger();
             }
             catch (Exception ex)
             {
@@ -393,81 +566,45 @@ namespace RoboViz
             }
         }
 
-        private async void StreamTimer_Tick(object? sender, EventArgs e)
+        // Optional: Live preview for debugging/setup — only used if user manually clicks 'Start Stream'
+        private void StreamTimer_Tick(object? sender, EventArgs e)
         {
-            if (!_isStreaming || _cameraManager == null || _service == null) return;
-
-            // Prevent re-entrant ticks while analyzing
-            _streamTimer?.Stop();
+            if (!_isStreaming || _cameraManager == null || _streamTimer == null) return;
 
             try
             {
                 int frameCount = _activeFrameCount;
-                var frames = _cameraManager.GetAllLatestFrames();
+                int updatedCount = 0;
 
-                // Display raw frames
-                for (int i = 0; i < frameCount && i < frames.Length; i++)
+                for (int i = 0; i < frameCount; i++)
                 {
-                    if (frames[i] != null)
-                        _imageDisplays[i].Source = InspectionService.BitmapToBitmapSource(frames[i]!);
-                }
+                    var (frame, sequence) = _cameraManager.GetLatestFrameWithSequence(i);
+                    if (frame == null) continue;
 
-                // Run analysis if all frames are available
-                bool allReady = true;
-                for (int i = 0; i < frameCount && i < frames.Length; i++)
-                {
-                    if (frames[i] == null) { allReady = false; break; }
-                }
-
-                if (allReady)
-                {
-                    BtnAnalyze.IsEnabled = false;
-                    StatusText.Text = "Analyzing stream frame...";
-                    VerdictText.Text = "PROCESSING...";
-                    VerdictText.Foreground = WarningAmber;
-
-                    InspectionResult[] results = new InspectionResult[frameCount];
-                    long batchMs = 0;
-
-                    // Capture references for the background thread
-                    var capturedFrames = frames;
-                    string row1Det = _row1Detector;
-                    string row2Det = _row2Detector;
-
-                    await Task.Run(() =>
+                    if (sequence == _lastDisplayedSequence[i])
                     {
-                        var batchSw = Stopwatch.StartNew();
-                        Parallel.For(0, frameCount, i =>
-                        {
-                            string detector = i < 2 ? row1Det : row2Det;
-                            results[i] = detector == "MaskRCNN"
-                                ? _service.InspectMaskRCNN(capturedFrames[i]!)
-                                : _service.InspectPatchCore(capturedFrames[i]!);
-                        });
-                        batchMs = batchSw.ElapsedMilliseconds;
-                    });
-
-                    // Update UI with results (same as Analyze_Click)
-                    UpdateAnalysisResults(results, batchMs);
-
-                    // Dispose captured frames
-                    for (int i = 0; i < capturedFrames.Length; i++)
-                    {
-                        if (capturedFrames[i] != null
-                            && (i >= frameCount || !ReferenceEquals(capturedFrames[i], results[i].OverlayImage)))
-                            capturedFrames[i]!.Dispose();
+                        _streamSkipCount++;
+                        frame.Dispose();
+                        continue;
                     }
+
+                    _imageDisplays[i].Source = InspectionService.BitmapToBitmapSource(frame);
+                    _lastDisplayedSequence[i] = sequence;
+                    _streamFrameCount++;
+                    updatedCount++;
+                    frame.Dispose();
+                }
+
+                if (_streamFrameCount > 0 && _streamFrameCount % 50 == 0)
+                {
+                    long total = _streamFrameCount + _streamSkipCount;
+                    double utilization = total > 0 ? (_streamFrameCount * 100.0 / total) : 0;
+                    Debug.WriteLine($"[StreamPreview] FPS stats: displayed={_streamFrameCount}, skipped={_streamSkipCount}, utilization={utilization:F1}%, last_tick_updated={updatedCount}");
                 }
             }
             catch (Exception ex)
             {
-                DetailsText.Text = $"Stream error: {ex.Message}";
-            }
-            finally
-            {
-                BtnAnalyze.IsEnabled = _service != null;
-                if (_isStreaming)
-                    _streamTimer?.Start();
+                Debug.WriteLine($"[StreamPreview] Error: {ex.Message}");
             }
         }
 
@@ -484,9 +621,8 @@ namespace RoboViz
             _streamTimer?.Stop();
 
             int frameCount = _activeFrameCount;
-            string detectorDesc = _row1Detector == _row2Detector
-                ? _row1Detector
-                : $"{_row1Detector} + {_row2Detector}";
+            var detectors = _cameraSlots.Select(c => c.Detector).Distinct().ToArray();
+            string detectorDesc = detectors.Length == 1 ? detectors[0] : string.Join(" + ", detectors);
             StatusText.Text = $"Analyzing {frameCount} frames ({detectorDesc})...";
             VerdictText.Text = "PROCESSING...";
             VerdictText.Foreground = WarningAmber;
@@ -495,8 +631,8 @@ namespace RoboViz
             InspectionResult[] results = new InspectionResult[frameCount];
             long batchMs = 0;
 
-            string row1Det = _row1Detector;
-            string row2Det = _row2Detector;
+            // Snapshot per-camera detector assignments for the background task
+            var slotConfigs = _cameraSlots.ToArray();
 
             await Task.Run(() =>
             {
@@ -520,7 +656,7 @@ namespace RoboViz
                 var batchSw = Stopwatch.StartNew();
                 Parallel.For(0, frameCount, i =>
                 {
-                    string detector = i < 2 ? row1Det : row2Det;
+                    string detector = slotConfigs[i].Detector;
                     results[i] = detector == "MaskRCNN"
                         ? _service.InspectMaskRCNN(copies[i])
                         : _service.InspectPatchCore(copies[i]);
@@ -690,44 +826,15 @@ namespace RoboViz
 
         private void TriggerStart_Click(object sender, RoutedEventArgs e)
         {
-            // Load config from file
-            TriggerConfig config;
             try
             {
-                config = TriggerConfig.Load();
+                StartTriggerMode();
             }
             catch (Exception ex)
             {
-                TriggerStatusText.Text = $"Config error: {ex.Message}";
+                TriggerStatusText.Text = $"Failed: {ex.Message}";
                 TriggerStatusText.Foreground = ErrorRed;
-                return;
             }
-
-            // Connect Modbus using config file settings (separate from the manual output Modbus)
-            var triggerModbus = new ModbusService();
-            if (!triggerModbus.Connect(config.ComPort, config.BaudRate, config.SlaveId))
-            {
-                TriggerStatusText.Text = $"Modbus connect failed: {triggerModbus.LastError}";
-                TriggerStatusText.Foreground = ErrorRed;
-                triggerModbus.Dispose();
-                return;
-            }
-
-            // Capture current detector assignments
-            string row1Det = _row1Detector;
-            string row2Det = _row2Detector;
-            Func<int, string> getDetector = i => i < 2 ? row1Det : row2Det;
-
-            _triggerService = new TriggerService(
-                triggerModbus, _cameraManager, _service, config, getDetector,
-                result => Dispatcher.BeginInvoke(() => OnTriggerResult(result)));
-
-            _triggerService.Start();
-            BtnTriggerStart.IsEnabled = false;
-            BtnTriggerStop.IsEnabled = true;
-            TriggerStatusText.Text = $"Running — {config.ComPort} @ {config.BaudRate} " +
-                $"(slave {config.SlaveId}) | poll {config.PollIntervalMs}ms";
-            TriggerStatusText.Foreground = ReadyGreen;
         }
 
         private void TriggerStop_Click(object sender, RoutedEventArgs e)
@@ -743,7 +850,7 @@ namespace RoboViz
 
         private void OnTriggerResult(TriggerResultEvent evt)
         {
-            string pair = evt.Type == TriggerType.Cam13 ? "CAM 1+3" : "CAM 2+4";
+            string pair = evt.Type == TriggerType.Trigger1 ? "Trigger 1" : "Trigger 2";
 
             // Trigger-only mode (no cameras/model): just show that the coil fired
             if (evt.Results.Length == 0)
@@ -753,23 +860,35 @@ namespace RoboViz
                 return;
             }
 
-            // Full mode: update images + verdicts
-            int[] slots = evt.Type == TriggerType.Cam13 ? [0, 2] : [1, 3];
+            // Display frozen inspection results (always show overlay image from inference)
             bool showOverlay = ChkShowOverlay.IsChecked == true;
 
-            for (int i = 0; i < evt.Results.Length && i < slots.Length; i++)
+            for (int i = 0; i < evt.Results.Length && i < evt.Slots.Length; i++)
             {
-                int slot = slots[i];
+                int slot = evt.Slots[i];
+                if (slot < 0 || slot >= _imageDisplays.Length) continue;
                 var r = evt.Results[i];
-                if (showOverlay && r.OverlayImage != null)
-                    _imageDisplays[slot].Source = InspectionService.BitmapToBitmapSource(r.OverlayImage);
+
+                // Always display the result image (frozen frame after inference)
+                // If overlay checkbox is ON, show annotated image; otherwise show raw image
+                if (r.OverlayImage != null)
+                {
+                    _imageDisplays[slot].Source = InspectionService.BitmapToBitmapSource(
+                        showOverlay ? r.OverlayImage : r.OverlayImage);
+                }
+
                 _verdictLabels[slot].Text = r.Verdict;
                 _verdictLabels[slot].Foreground = VerdictColorMap.GetValueOrDefault(r.Verdict, NormalGray);
             }
 
+            // Update metrics table from first result
+            if (evt.Results.Length > 0)
+                PopulateMetricsTable(evt.Results[0].MetricResults);
+
             string modbusInfo = evt.ModbusWriteOk ? "coil written" : (evt.ModbusError ?? "no write");
+            string verdicts = string.Join("/", evt.Results.Select(r => r.Verdict));
             TriggerStatusText.Text =
-                $"{pair}: {evt.Results[0].Verdict}/{evt.Results[1].Verdict} | {evt.BatchMs}ms | {modbusInfo}";
+                $"{pair}: {verdicts} | {evt.BatchMs}ms | {modbusInfo}";
             TriggerStatusText.Foreground = ReadyGreen;
         }
     }

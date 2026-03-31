@@ -25,28 +25,28 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Update="maskrcnn_oring.onnx">
+    <None Update="Assets\maskrcnn_oring.onnx">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="patchcore_model1_resnet50_fp16.onnx">
+    <None Update="Assets\patchcore_model1_resnet50_fp16.onnx">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="patchcore_model1_resnet50.json">
+    <None Update="Assets\patchcore_model1_resnet50.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="patchcore_model2_resnet50_fp16.onnx">
+    <None Update="Assets\patchcore_model2_resnet50_fp16.onnx">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="patchcore_model2_resnet50.json">
+    <None Update="Assets\patchcore_model2_resnet50.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="model1_tuned_thresholds.json">
+    <None Update="Assets\model1_tuned_thresholds.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="model2_tuned_thresholds.json">
+    <None Update="Assets\model2_tuned_thresholds.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="trigger_config.json">
+    <None Update="Assets\trigger_config.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>

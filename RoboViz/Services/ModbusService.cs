@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO.Ports;
 using NModbus;
 using NModbus.Serial;
@@ -16,6 +17,7 @@ public class ModbusService : IDisposable
     private SerialPort? _port;
     private IModbusMaster? _master;
     private byte _slaveId;
+    private readonly object _busLock = new();
 
     public bool IsConnected => _port?.IsOpen == true;
     public string? LastError { get; private set; }
@@ -30,6 +32,7 @@ public class ModbusService : IDisposable
 
         try
         {
+            MaskRCNNDetector.LogDiag($"[Modbus] Opening serial port {comPort}...");
             _port = new SerialPort(comPort)
             {
                 BaudRate = baudRate,
@@ -40,6 +43,7 @@ public class ModbusService : IDisposable
                 WriteTimeout = 1000,
             };
             _port.Open();
+            MaskRCNNDetector.LogDiag($"[Modbus] Serial port opened successfully.");
 
             var factory = new ModbusFactory();
             _master = factory.CreateRtuMaster(new SerialPortAdapter(_port));
@@ -49,12 +53,14 @@ public class ModbusService : IDisposable
 
             LastError = null;
             MaskRCNNDetector.LogDiag($"[Modbus] Connected: {comPort} @ {baudRate} baud, slave {slaveId}");
+            Debug.WriteLine($"[Modbus] Connected: {comPort} @ {baudRate} baud, slave {slaveId}");
             return true;
         }
         catch (Exception ex)
         {
             LastError = ex.Message;
-            MaskRCNNDetector.LogDiag($"[Modbus] Connect failed: {ex.Message}");
+            MaskRCNNDetector.LogDiag($"[Modbus] Connect failed: {ex}");
+            Debug.WriteLine($"[Modbus] Connect FAILED: {ex.Message}");
             Disconnect();
             return false;
         }
@@ -88,7 +94,10 @@ public class ModbusService : IDisposable
 
         try
         {
-            _master.WriteMultipleCoils(_slaveId, coilAddress, [cam12Reject, cam34Reject]);
+            lock (_busLock)
+            {
+                _master.WriteMultipleCoils(_slaveId, coilAddress, [cam12Reject, cam34Reject]);
+            }
             LastError = null;
             MaskRCNNDetector.LogDiag(
                 $"[Modbus] Wrote coils: CAM1+2={cam12Reject}, CAM3+4={cam34Reject}");
@@ -115,7 +124,10 @@ public class ModbusService : IDisposable
 
         try
         {
-            _master.WriteSingleCoil(_slaveId, coilAddress, value);
+            lock (_busLock)
+            {
+                _master.WriteSingleCoil(_slaveId, coilAddress, value);
+            }
             LastError = null;
             return true;
         }
@@ -135,7 +147,11 @@ public class ModbusService : IDisposable
 
         try
         {
-            var result = _master.ReadCoils(_slaveId, startAddress, count);
+            bool[] result;
+            lock (_busLock)
+            {
+                result = _master.ReadCoils(_slaveId, startAddress, count);
+            }
             LastError = null;
             return result;
         }
