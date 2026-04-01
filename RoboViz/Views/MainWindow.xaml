@@ -133,6 +133,10 @@
                                    FontSize="14" FontWeight="Bold" Foreground="White"
                                    HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,8,10,0"
                                    Padding="6,2"/>
+                        <TextBlock x:Name="ScoreLabel0" Text=""
+                                   FontFamily="{StaticResource ShareTechMono}"
+                                   FontSize="10" Foreground="#FFB0BEC5"
+                                   HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="10,0,0,8"/>
                     </Grid>
                 </Border>
 
@@ -147,6 +151,10 @@
                                    FontSize="14" FontWeight="Bold" Foreground="White"
                                    HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,8,10,0"
                                    Padding="6,2"/>
+                        <TextBlock x:Name="ScoreLabel1" Text=""
+                                   FontFamily="{StaticResource ShareTechMono}"
+                                   FontSize="10" Foreground="#FFB0BEC5"
+                                   HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="10,0,0,8"/>
                     </Grid>
                 </Border>
 
@@ -161,6 +169,10 @@
                                    FontSize="14" FontWeight="Bold" Foreground="White"
                                    HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,8,10,0"
                                    Padding="6,2"/>
+                        <TextBlock x:Name="ScoreLabel2" Text=""
+                                   FontFamily="{StaticResource ShareTechMono}"
+                                   FontSize="10" Foreground="#FFB0BEC5"
+                                   HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="10,0,0,8"/>
                     </Grid>
                 </Border>
 
@@ -175,6 +187,10 @@
                                    FontSize="14" FontWeight="Bold" Foreground="White"
                                    HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,8,10,0"
                                    Padding="6,2"/>
+                        <TextBlock x:Name="ScoreLabel3" Text=""
+                                   FontFamily="{StaticResource ShareTechMono}"
+                                   FontSize="10" Foreground="#FFB0BEC5"
+                                   HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="10,0,0,8"/>
                     </Grid>
                 </Border>
             </Grid>

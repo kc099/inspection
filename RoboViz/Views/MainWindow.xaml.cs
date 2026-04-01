@@ -26,6 +26,7 @@ namespace RoboViz
 
         private System.Windows.Controls.Image[] _imageDisplays = null!;
         private TextBlock[] _verdictLabels = null!;
+        private TextBlock[] _scoreLabels = null!;
         private TextBlock[] _camLabels = null!;
         private const int FrameCount = 4;
         private int _activeFrameCount = 4;
@@ -84,6 +85,7 @@ namespace RoboViz
             InitializeComponent();
             _imageDisplays = [ImageDisplay0, ImageDisplay1, ImageDisplay2, ImageDisplay3];
             _verdictLabels = [VerdictLabel0, VerdictLabel1, VerdictLabel2, VerdictLabel3];
+            _scoreLabels = [ScoreLabel0, ScoreLabel1, ScoreLabel2, ScoreLabel3];
             _camLabels = [CamLabel0, CamLabel1, CamLabel2, CamLabel3];
 
             _clockTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -142,6 +144,7 @@ namespace RoboViz
                 }
 
                 PopulateMetricsTable();
+                UpdateCameraConfigSummary();
 
                 // Initialize cameras (enumerate devices) but don't start streaming yet
                 await InitializeCamerasAsync(progress);
@@ -408,6 +411,10 @@ namespace RoboViz
             int t1 = _cameraSlots.Count(c => c.DeviceIndex >= 0 && c.TriggerGroup == 1);
             int t2 = _cameraSlots.Count(c => c.DeviceIndex >= 0 && c.TriggerGroup == 2);
             lines.Add($"Trigger 1: {t1} cam(s)  •  Trigger 2: {t2} cam(s)");
+
+            if (_service != null && _service.PatchCoreThreshold > 0)
+                lines.Add($"PatchCore threshold: {_service.PatchCoreThreshold:F2}  ({_service.CurrentModel})");
+
             CameraConfigText.Text = string.Join("\n", lines);
         }
 
@@ -427,6 +434,7 @@ namespace RoboViz
             VerdictText.Text = "READY";
             VerdictText.Foreground = ReadyGreen;
             PopulateMetricsTable();
+            UpdateCameraConfigSummary();
             BtnAnalyze.IsEnabled = _currentImage != null;
         }
 
@@ -502,6 +510,8 @@ namespace RoboViz
                 VerdictBorder.Background = VerdictNeutralBg;
                 CycleTimeText.Text = "";
                 foreach (var lbl in _verdictLabels)
+                    lbl.Text = "";
+                foreach (var lbl in _scoreLabels)
                     lbl.Text = "";
                 PopulateMetricsTable();
                 DetailsText.Text = $"Loaded: {Path.GetFileName(dlg.FileName)}  " +
@@ -716,6 +726,17 @@ namespace RoboViz
                     _imageDisplays[i].Source = InspectionService.BitmapToBitmapSource(r.OverlayImage);
                 _verdictLabels[i].Text = r.Verdict;
                 _verdictLabels[i].Foreground = VerdictColorMap.GetValueOrDefault(r.Verdict, NormalGray);
+
+                // Show score vs threshold on PatchCore camera tiles
+                if (GetDetectorForCamera(i) == "PatchCore" && r.DetectorType == "PatchCore")
+                {
+                    _scoreLabels[i].Text = $"Score: {r.AnomalyScore:F2}  |  Threshold: {r.AnomalyThreshold:F2}";
+                    _scoreLabels[i].Foreground = r.HasDefect ? FailRed : PassGreen;
+                }
+                else
+                {
+                    _scoreLabels[i].Text = "";
+                }
             }
 
             // Show READY in the banner (per-cam verdicts stay on each image tile)

@@ -37,6 +37,12 @@
     <None Update="Assets\patchcore_model2_cropped_resnet50_fp16.onnx">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Update="Assets\patchcore_model1_cropped_resnet50_fp16_ablation.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="Assets\patchcore_model2_cropped_resnet50_fp16_ablation.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Update="Assets\model1_tuned_thresholds.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

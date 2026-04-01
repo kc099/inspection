@@ -80,7 +80,7 @@ public class InspectionService : IDisposable
         LoadPatchCoreModel(modelName, progress);
     }
 
-    private const float PatchCoreHardcodedThreshold = 15.0f;
+    public float PatchCoreThreshold => _patchcore.Threshold;
 
     private void LoadPatchCoreModel(string modelName, IProgress<string>? progress)
     {
@@ -94,7 +94,19 @@ public class InspectionService : IDisposable
             return;
         }
 
-        _patchcore.LoadModel(onnxPath, PatchCoreHardcodedThreshold, progress);
+        // Load threshold from ablation JSON (falls back to 15.0 if not found)
+        string jsonPath = Path.Combine(assetsDir, $"patchcore_{suffix}_cropped_resnet50_fp16_ablation.json");
+        float threshold = 15.0f;
+        var meta = PatchCoreDetector.LoadMetadata(jsonPath);
+        if (meta != null)
+        {
+            threshold = meta.ComputeThreshold(15.0f);
+            MaskRCNNDetector.LogDiag($"[PatchCore] {modelName} threshold={threshold:F2} " +
+                $"(good_max={meta.good_max_fp16}, defect_min={meta.defect_min_fp16})");
+        }
+        progress?.Report($"PatchCore {modelName} threshold: {threshold:F2}");
+
+        _patchcore.LoadModel(onnxPath, threshold, progress);
     }
 
     private static Dictionary<string, MetricThreshold> LoadThresholdsForModel(string modelName)

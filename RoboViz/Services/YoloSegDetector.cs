@@ -1,4 +1,4 @@
-using System;
+ï»¿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -16,8 +16,8 @@ namespace RoboViz;
 /// Segments the O-ring from the background and returns the crop bounding box.
 ///
 /// Pipeline:
-///   Camera 2048×1536 ? 4×4 bin 512×384 ? YOLO inference
-///   ? Segmentation mask ? Bounding box in 512×384 coords
+///   Camera 2048Ã—1536 â†’ 4Ã—4 bin 512Ã—384 â†’ YOLO inference
+///   â†’ Segmentation mask â†’ Bounding box in 512Ã—384 coords
 ///
 /// Input:   "images"   [1, 3, 384, 512]  float32, RGB, [0-1]
 /// Output0: "output0"  [1, 37, 4032]     float32  (cx, cy, w, h, conf, 32 mask coeffs)
@@ -61,8 +61,8 @@ public class YoloSegDetector : IDisposable
     }
 
     /// <summary>
-    /// Segment the O-ring from a 512×384 binned image.
-    /// Returns the crop rectangle in 512×384 coordinates, or null if no O-ring detected.
+    /// Segment the O-ring from a 512Ã—384 binned image.
+    /// Returns the crop rectangle in 512Ã—384 coordinates, or null if no O-ring detected.
     /// </summary>
     public Rectangle? Segment(Bitmap image512x384, out long inferenceMs)
     {
@@ -86,9 +86,9 @@ public class YoloSegDetector : IDisposable
         inferenceMs = sw.ElapsedMilliseconds;
 
         var resultList = results.ToList();
-        // output0: [1, 37, 4032] — detections (attributes × candidates)
+        // output0: [1, 37, 4032] â€” detections (attributes Ã— candidates)
         var det0 = resultList[0].AsTensor<float>() as DenseTensor<float>;
-        // output1: [1, 32, 96, 128] — mask prototypes
+        // output1: [1, 32, 96, 128] â€” mask prototypes
         var protos = resultList[1].AsTensor<float>() as DenseTensor<float>;
 
         if (det0 == null || protos == null)
@@ -101,7 +101,7 @@ public class YoloSegDetector : IDisposable
         var protoSpan = protos.Buffer.Span;
 
         // Step 3: Find best detection (highest confidence > threshold)
-        // output0 layout: [1, 37, 4032] — detSpan index = attr * 4032 + det_idx
+        // output0 layout: [1, 37, 4032] â€” detSpan index = attr * 4032 + det_idx
         int bestIdx = -1;
         float bestConf = ConfThreshold;
         for (int i = 0; i < NumDetections; i++)
@@ -127,8 +127,8 @@ public class YoloSegDetector : IDisposable
         for (int k = 0; k < NumMaskCoeffs; k++)
             coeffs[k] = detSpan[(5 + k) * NumDetections + bestIdx];
 
-        // Step 5: Compute mask at 128×96 = sigmoid(coeffs · protos)
-        // proto layout: [1, 32, 96, 128] — protoSpan index = k * ProtoH*ProtoW + y * ProtoW + x
+        // Step 5: Compute mask at 128Ã—96 = sigmoid(coeffs Â· protos)
+        // proto layout: [1, 32, 96, 128] â€” protoSpan index = k * ProtoH*ProtoW + y * ProtoW + x
         int minX = ProtoW, minY = ProtoH, maxX = -1, maxY = -1;
         int protoPlane = ProtoH * ProtoW;
 
@@ -160,7 +160,7 @@ public class YoloSegDetector : IDisposable
             return null;
         }
 
-        // Step 6: Scale from proto (128×96) to input (512×384)
+        // Step 6: Scale from proto (128Ã—96) to input (512Ã—384)
         float scaleX = InputW / (float)ProtoW; // 4.0
         float scaleY = InputH / (float)ProtoH; // 4.0
         int bx1 = (int)(minX * scaleX);
@@ -168,7 +168,7 @@ public class YoloSegDetector : IDisposable
         int bx2 = (int)((maxX + 1) * scaleX);
         int by2 = (int)((maxY + 1) * scaleY);
 
-        // Clamp to 512×384 image bounds
+        // Clamp to 512Ã—384 image bounds
         bx1 = Math.Max(0, bx1);
         by1 = Math.Max(0, by1);
         bx2 = Math.Min(InputW, bx2);
@@ -189,7 +189,7 @@ public class YoloSegDetector : IDisposable
 
     /// <summary>
     /// Fill the input buffer: [3, 384, 512] float32, RGB, [0-1].
-    /// No letterboxing — the model accepts 512×384 directly.
+    /// No letterboxing â€” the model accepts 512Ã—384 directly.
     /// </summary>
     private static void FillInputBuffer(Bitmap image, float[] buffer)
     {
@@ -223,6 +223,7 @@ public class YoloSegDetector : IDisposable
                 }
             }
         }
+        catch { }
         finally
         {
             image.UnlockBits(bmpData);
