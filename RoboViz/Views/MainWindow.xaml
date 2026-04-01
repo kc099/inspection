@@ -309,17 +309,17 @@
                     <Border Background="#FF18181E" CornerRadius="10" Padding="14,12" Margin="0,0,0,14"
                             BorderBrush="#FF2A2A34" BorderThickness="1">
                         <StackPanel>
-                            <TextBlock Text="GEOMETRIC METRICS (CAM 1)"
+                            <TextBlock Text="GEOMETRIC METRICS (MRCNN)"
                                        FontFamily="{StaticResource Montserrat}"
                                        Foreground="#FF6E6E76" FontSize="11" FontWeight="Bold"
                                        Margin="0,0,0,8"/>
                             <Grid Margin="0,0,0,6">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="160"/>
-                                    <ColumnDefinition Width="100"/>
-                                    <ColumnDefinition Width="100"/>
-                                    <ColumnDefinition Width="100"/>
-                                    <ColumnDefinition Width="70"/>
+                                    <ColumnDefinition Width="80"/>
+                                    <ColumnDefinition Width="120"/>
+                                    <ColumnDefinition Width="120"/>
+                                    <ColumnDefinition Width="60"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0" Text="Metric"
                                            FontFamily="{StaticResource Montserrat}"
@@ -327,12 +327,12 @@
                                 <TextBlock Grid.Column="1" Text="Value"
                                            FontFamily="{StaticResource Montserrat}"
                                            Foreground="#FF505058" FontSize="11" FontWeight="Bold"/>
-                                <TextBlock Grid.Column="2" Text="Min"
+                                <TextBlock Grid.Column="2" Text="Min (3001/3002)"
                                            FontFamily="{StaticResource Montserrat}"
-                                           Foreground="#FF505058" FontSize="11" FontWeight="Bold"/>
-                                <TextBlock Grid.Column="3" Text="Max"
+                                           Foreground="#FF505058" FontSize="10" FontWeight="Bold"/>
+                                <TextBlock Grid.Column="3" Text="Max (3001/3002)"
                                            FontFamily="{StaticResource Montserrat}"
-                                           Foreground="#FF505058" FontSize="11" FontWeight="Bold"/>
+                                           Foreground="#FF505058" FontSize="10" FontWeight="Bold"/>
                                 <TextBlock Grid.Column="4" Text="Status"
                                            FontFamily="{StaticResource Montserrat}"
                                            Foreground="#FF505058" FontSize="11" FontWeight="Bold"/>
@@ -344,10 +344,10 @@
                                         <Grid Margin="0,3">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="160"/>
-                                                <ColumnDefinition Width="100"/>
-                                                <ColumnDefinition Width="100"/>
-                                                <ColumnDefinition Width="100"/>
-                                                <ColumnDefinition Width="70"/>
+                                                <ColumnDefinition Width="80"/>
+                                                <ColumnDefinition Width="120"/>
+                                                <ColumnDefinition Width="120"/>
+                                                <ColumnDefinition Width="60"/>
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Grid.Column="0" Text="{Binding Label}"
                                                        FontFamily="{StaticResource ShareTechMono}"
@@ -358,10 +358,10 @@
                                                        FontWeight="Bold"/>
                                             <TextBlock Grid.Column="2" Text="{Binding LoText}"
                                                        FontFamily="{StaticResource ShareTechMono}"
-                                                       Foreground="#FF6E6E76" FontSize="12"/>
+                                                       Foreground="#FF6E6E76" FontSize="11"/>
                                             <TextBlock Grid.Column="3" Text="{Binding HiText}"
                                                        FontFamily="{StaticResource ShareTechMono}"
-                                                       Foreground="#FF6E6E76" FontSize="12"/>
+                                                       Foreground="#FF6E6E76" FontSize="11"/>
                                             <TextBlock Grid.Column="4" Text="{Binding StatusText}"
                                                        FontFamily="{StaticResource ShareTechMono}"
                                                        Foreground="{Binding StatusColor}" FontSize="13"

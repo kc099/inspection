@@ -15,6 +15,8 @@ public partial class CameraSetupDialog : Window
     private readonly RadioButton[] _trig1;
     private readonly RadioButton[] _trig2;
     private readonly TextBox[] _delays;
+    private readonly ushort _coilAddr1;
+    private readonly ushort _coilAddr2;
 
     /// <summary>Result configs — populated on Start click, null if cancelled.</summary>
     public CameraSlotConfig[]? ResultConfigs { get; private set; }
@@ -30,6 +32,13 @@ public partial class CameraSetupDialog : Window
         _trig1  = [Trig1_0, Trig1_1, Trig1_2, Trig1_3];
         _trig2  = [Trig2_0, Trig2_1, Trig2_2, Trig2_3];
         _delays = [TxtDelay0, TxtDelay1, TxtDelay2, TxtDelay3];
+
+        // Load coil addresses from trigger config and label the radio buttons
+        var trigCfg = TriggerConfig.Load();
+        _coilAddr1 = trigCfg.TriggerCoil_Cam13;
+        _coilAddr2 = trigCfg.TriggerCoil_Cam24;
+        foreach (var rb in _trig1) rb.Content = _coilAddr1.ToString();
+        foreach (var rb in _trig2) rb.Content = _coilAddr2.ToString();
 
         PopulateCameraList();
         PopulateCombos();
@@ -128,7 +137,7 @@ public partial class CameraSetupDialog : Window
         int pc = configs.Count(c => c.DeviceIndex >= 0 && c.Detector == "PatchCore");
 
         SummaryText.Text = $"{assigned} camera(s) assigned  •  " +
-            $"Trigger 1: {t1} cam(s)  •  Trigger 2: {t2} cam(s)  •  " +
+            $"Coil {_coilAddr1}: {t1} cam(s)  •  Coil {_coilAddr2}: {t2} cam(s)  •  " +
             $"MaskRCNN: {mr}  •  PatchCore: {pc}";
 
         BtnStart.IsEnabled = assigned > 0;

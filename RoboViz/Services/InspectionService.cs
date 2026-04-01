@@ -32,13 +32,16 @@ public class InspectionService : IDisposable
     private readonly PatchCoreDetector _patchcore;
     private readonly YoloSegDetector _yoloSeg;
     private readonly float _scoreThreshold;
-    private Dictionary<string, MetricThreshold> _thresholds;
+    private Dictionary<string, MetricThreshold> _thresholdsCam3001;
+    private Dictionary<string, MetricThreshold> _thresholdsCam3002;
     private string _currentModel;
 
     public string ActiveProvider => _maskrcnn.ActiveProvider;
     public string? GpuError => _maskrcnn.GpuError;
     public string CurrentModel => _currentModel;
-    public Dictionary<string, MetricThreshold> CurrentThresholds => _thresholds;
+    public Dictionary<string, MetricThreshold> CurrentThresholds => _thresholdsCam3001;
+    public Dictionary<string, MetricThreshold> ThresholdsCam3001 => _thresholdsCam3001;
+    public Dictionary<string, MetricThreshold> ThresholdsCam3002 => _thresholdsCam3002;
 
     public InspectionService(string maskrcnnModelPath, float scoreThreshold = 0.5f,
         bool useGpu = true, IProgress<string>? progress = null,
@@ -49,7 +52,7 @@ public class InspectionService : IDisposable
         _yoloSeg = new YoloSegDetector();
         _scoreThreshold = scoreThreshold;
         _currentModel = modelName;
-        _thresholds = LoadThresholdsForModel(modelName);
+        (_thresholdsCam3001, _thresholdsCam3002) = LoadThresholdsForModel(modelName);
 
         LoadPatchCoreModel(modelName, progress);
         LoadYoloSegModel(progress);
@@ -74,7 +77,7 @@ public class InspectionService : IDisposable
     {
         if (_currentModel == modelName) return;
         _currentModel = modelName;
-        _thresholds = LoadThresholdsForModel(modelName);
+        (_thresholdsCam3001, _thresholdsCam3002) = LoadThresholdsForModel(modelName);
 
         // Unload previous PatchCore model and load new one to save GPU memory
         LoadPatchCoreModel(modelName, progress);
@@ -109,13 +112,18 @@ public class InspectionService : IDisposable
         _patchcore.LoadModel(onnxPath, threshold, progress);
     }
 
-    private static Dictionary<string, MetricThreshold> LoadThresholdsForModel(string modelName)
+    private static (Dictionary<string, MetricThreshold> cam3001, Dictionary<string, MetricThreshold> cam3002)
+        LoadThresholdsForModel(string modelName)
     {
-        string fileName = modelName == "Model 1"
-            ? "model1_tuned_thresholds.json"
-            : "model2_tuned_thresholds.json";
-        string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets", fileName);
-        return ThresholdConfig.LoadThresholds(path);
+        string assetsDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets");
+        string suffix = modelName == "Model 1" ? "model1" : "model2";
+
+        string csv3001 = Path.Combine(assetsDir, $"{suffix}_3001_measurements_stats.csv");
+        string csv3002 = Path.Combine(assetsDir, $"{suffix}_3002_measurements_stats.csv");
+
+        var t3001 = ThresholdConfig.LoadThresholdsFromCsv(csv3001);
+        var t3002 = ThresholdConfig.LoadThresholdsFromCsv(csv3002);
+        return (t3001, t3002);
     }
 
     /// <summary>
@@ -125,6 +133,7 @@ public class InspectionService : IDisposable
     /// </summary>
     private InspectionResult RunGeoEvaluation(
         Bitmap rawImage, string detectorType, Stopwatch totalSw,
+        Dictionary<string, MetricThreshold> thresholds,
         out string geoVerdict)
     {
         var geoSw = Stopwatch.StartNew();
@@ -148,7 +157,7 @@ public class InspectionService : IDisposable
         double scale = ThresholdConfig.ComputeResolutionScale(rawImage.Width, rawImage.Height);
         var rawMetrics = geoResult.ToDictionary();
         var normedMetrics = ThresholdConfig.NormalizeMeasurements(rawMetrics, scale);
-        var (metricResults, verdict, failReasons) = ThresholdConfig.Evaluate(normedMetrics, _thresholds);
+        var (metricResults, verdict, failReasons) = ThresholdConfig.Evaluate(normedMetrics, thresholds);
         geoVerdict = verdict;
 
         var result = new InspectionResult
@@ -172,11 +181,13 @@ public class InspectionService : IDisposable
 
     /// <summary>
     /// Run Mask R-CNN inspection (CAM 1, 3).
+    /// triggerGroup selects the per-camera threshold set (1 = coil 3001, 2 = coil 3002).
     /// </summary>
-    public InspectionResult InspectMaskRCNN(Bitmap rawImage)
+    public InspectionResult InspectMaskRCNN(Bitmap rawImage, int triggerGroup = 1)
     {
         var totalSw = Stopwatch.StartNew();
-        var result = RunGeoEvaluation(rawImage, "MaskRCNN", totalSw, out string geoVerdict);
+        var thresholds = triggerGroup == 2 ? _thresholdsCam3002 : _thresholdsCam3001;
+        var result = RunGeoEvaluation(rawImage, "MaskRCNN", totalSw, thresholds, out string geoVerdict);
         if (geoVerdict != "PASS")
             return result;
 

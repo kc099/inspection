@@ -104,7 +104,7 @@
                     <ColumnDefinition Width="56"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="130"/>
-                    <ColumnDefinition Width="100"/>
+                    <ColumnDefinition Width="120"/>
                     <ColumnDefinition Width="80"/>
                 </Grid.ColumnDefinitions>
                 <Grid.RowDefinitions>
@@ -120,7 +120,7 @@
                 <TextBlock Grid.Row="0" Grid.Column="0" Text="SLOT" Style="{StaticResource HeaderLabel}" HorizontalAlignment="Left"/>
                 <TextBlock Grid.Row="0" Grid.Column="1" Text="CAMERA" Style="{StaticResource HeaderLabel}" HorizontalAlignment="Left" Margin="4,0"/>
                 <TextBlock Grid.Row="0" Grid.Column="2" Text="DETECTOR" Style="{StaticResource HeaderLabel}"/>
-                <TextBlock Grid.Row="0" Grid.Column="3" Text="TRIGGER" Style="{StaticResource HeaderLabel}"/>
+                <TextBlock Grid.Row="0" Grid.Column="3" Text="TRIGGER COIL" Style="{StaticResource HeaderLabel}"/>
                 <TextBlock Grid.Row="0" Grid.Column="4" Text="DELAY" Style="{StaticResource HeaderLabel}"/>
 
                 <Rectangle Grid.Row="1" Grid.ColumnSpan="5" Fill="#FF2A2A34" Margin="0,4"/>

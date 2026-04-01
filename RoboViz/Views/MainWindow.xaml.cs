@@ -441,7 +441,8 @@ namespace RoboViz
         private void PopulateMetricsTable(List<MetricEvalResult>? metricResults = null)
         {
             if (_service == null) return;
-            var thresholds = _service.CurrentThresholds;
+            var t1 = _service.ThresholdsCam3001;
+            var t2 = _service.ThresholdsCam3002;
 
             var rows = new List<MetricRowViewModel>();
             foreach (var def in ThresholdConfig.MetricDefs)
@@ -450,7 +451,8 @@ namespace RoboViz
                 string unit = string.IsNullOrEmpty(def.Unit) ? "" : $" ({def.Unit})";
                 string catTag = def.VerdictCategory == "rework" ? "[R]" : "[X]";
 
-                thresholds.TryGetValue(def.Key, out var t);
+                t1.TryGetValue(def.Key, out var th1);
+                t2.TryGetValue(def.Key, out var th2);
 
                 MetricEvalResult? evalResult = null;
                 if (metricResults != null)
@@ -461,11 +463,18 @@ namespace RoboViz
                     }
                 }
 
+                static string FormatDual(double? v1, double? v2, string f)
+                {
+                    string s1 = v1 is not null and < 9999 ? v1.Value.ToString(f) : "\u2014";
+                    string s2 = v2 is not null and < 9999 ? v2.Value.ToString(f) : "\u2014";
+                    return $"{s1}/{s2}";
+                }
+
                 var row = new MetricRowViewModel
                 {
                     Label = $"{catTag} {def.DisplayName}{unit}",
-                    LoText = t != null && t.Lo < 9999 ? t.Lo.ToString(fmt) : "\u2014",
-                    HiText = t != null && t.Hi < 9999 ? t.Hi.ToString(fmt) : "\u2014",
+                    LoText = FormatDual(th1?.Lo, th2?.Lo, fmt),
+                    HiText = FormatDual(th1?.Hi, th2?.Hi, fmt),
                 };
 
                 if (evalResult != null)
@@ -692,7 +701,7 @@ namespace RoboViz
                 {
                     string detector = slotConfigs[i].Detector;
                     results[i] = detector == "MaskRCNN"
-                        ? _service.InspectMaskRCNN(copies[i])
+                        ? _service.InspectMaskRCNN(copies[i], slotConfigs[i].TriggerGroup)
                         : _service.InspectPatchCore(copies[i]);
                 });
                 batchMs = batchSw.ElapsedMilliseconds;
@@ -916,7 +925,6 @@ namespace RoboViz
                 var r = evt.Results[i];
 
                 // Always display the result image (frozen frame after inference)
-                // If overlay checkbox is ON, show annotated image; otherwise show raw image
                 if (r.OverlayImage != null)
                 {
                     _imageDisplays[slot].Source = InspectionService.BitmapToBitmapSource(
@@ -925,6 +933,17 @@ namespace RoboViz
 
                 _verdictLabels[slot].Text = r.Verdict;
                 _verdictLabels[slot].Foreground = VerdictColorMap.GetValueOrDefault(r.Verdict, NormalGray);
+
+                // Show score vs threshold on PatchCore camera tiles
+                if (GetDetectorForCamera(slot) == "PatchCore" && r.DetectorType == "PatchCore")
+                {
+                    _scoreLabels[slot].Text = $"Score: {r.AnomalyScore:F2}  |  Threshold: {r.AnomalyThreshold:F2}";
+                    _scoreLabels[slot].Foreground = r.HasDefect ? FailRed : PassGreen;
+                }
+                else
+                {
+                    _scoreLabels[slot].Text = "";
+                }
             }
 
             // Update metrics table from first result

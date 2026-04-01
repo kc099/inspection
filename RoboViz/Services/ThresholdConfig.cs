@@ -56,6 +56,76 @@ public static class ThresholdConfig
         }
 
         // Widen reject thresholds by 10% (matches Python logic)
+        WidenRejectThresholds(thresholds);
+
+        return thresholds;
+    }
+
+    /// <summary>
+    /// Load thresholds from a CSV measurement stats file.
+    /// Uses p5 as lo and p95 as hi for the 6 display metrics.
+    /// CSV columns: metric,mean,std,min,max,p5,p95,n
+    /// </summary>
+    public static Dictionary<string, MetricThreshold> LoadThresholdsFromCsv(string csvPath)
+    {
+        var usedKeys = new HashSet<string>(MetricDefs.Select(m => m.Key));
+        var thresholds = new Dictionary<string, MetricThreshold>();
+
+        if (!File.Exists(csvPath))
+            return GetDefaultThresholds();
+
+        var lines = File.ReadAllLines(csvPath);
+        foreach (var line in lines.Skip(1)) // skip header
+        {
+            var parts = line.Split(',');
+            if (parts.Length < 7) continue;
+
+            string metric = parts[0].Trim();
+            if (!usedKeys.Contains(metric)) continue;
+
+            if (!double.TryParse(parts[5], out double p5) ||
+                !double.TryParse(parts[6], out double p95))
+                continue;
+
+            var def = MetricDefs.FirstOrDefault(d => d.Key == metric);
+            if (def == null) continue;
+
+            double lo, hi;
+            if (def.ThreshType == "max")
+            {
+                lo = 0;
+                hi = p95;
+            }
+            else if (def.ThreshType == "min")
+            {
+                lo = p5;
+                hi = 9999;
+            }
+            else // range
+            {
+                lo = p5;
+                hi = p95;
+            }
+
+            thresholds[metric] = new MetricThreshold(Math.Round(lo, 4), Math.Round(hi, 4));
+        }
+
+        // Fill missing with defaults
+        var defaults = GetDefaultThresholds();
+        foreach (var key in usedKeys)
+        {
+            if (!thresholds.ContainsKey(key))
+                thresholds[key] = defaults[key];
+        }
+
+        // Widen reject thresholds by 10%
+        WidenRejectThresholds(thresholds);
+
+        return thresholds;
+    }
+
+    private static void WidenRejectThresholds(Dictionary<string, MetricThreshold> thresholds)
+    {
         var rejectKeys = MetricDefs.Where(m => m.VerdictCategory == "reject").Select(m => m.Key).ToHashSet();
         foreach (var key in rejectKeys)
         {
@@ -64,8 +134,6 @@ public static class ThresholdConfig
             double hi = t.Hi < 9999 ? Math.Round(t.Hi * 1.1, 4) : t.Hi;
             thresholds[key] = new MetricThreshold(lo, hi);
         }
-
-        return thresholds;
     }
 
     public static Dictionary<string, MetricThreshold> GetDefaultThresholds() => new()

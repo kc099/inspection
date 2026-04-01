@@ -363,7 +363,7 @@ public class TriggerService : IDisposable
 
             Debug.WriteLine($"[Trigger] CAM {slotCfg.Slot + 1} frame: {frames[i]!.Width}x{frames[i]!.Height} px, detector={slotCfg.Detector}");
             var result = slotCfg.Detector == "MaskRCNN"
-                ? _inspection.InspectMaskRCNN(frames[i]!)
+                ? _inspection.InspectMaskRCNN(frames[i]!, triggerGroup)
                 : _inspection.InspectPatchCore(frames[i]!);
             resultList.Add(result);
             frameList.Add(frames[i]!);
