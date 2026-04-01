@@ -304,14 +304,37 @@ namespace RoboViz
 
             _triggerService = new TriggerService(
                 triggerModbus, _cameraManager, _service, config, _cameraSlots,
-                result => Dispatcher.BeginInvoke(() => OnTriggerResult(result)));
+                result => Dispatcher.BeginInvoke(() => OnTriggerResult(result)),
+                poll   => Dispatcher.BeginInvoke(() => OnPollStatus(poll)));
 
             _triggerService.Start();
             BtnTriggerStart.IsEnabled = false;
             BtnTriggerStop.IsEnabled = true;
             TriggerStatusText.Text = $"Running \u2014 {config.ComPort} @ {config.BaudRate} " +
-                $"(slave {config.SlaveId}) | poll {config.PollIntervalMs}ms";
+                $"(slave {config.SlaveId}) | poll {config.PollIntervalMs}ms | " +
+                $"coils {config.TriggerCoil_Cam13}/{config.TriggerCoil_Cam24}";
             TriggerStatusText.Foreground = ReadyGreen;
+        }
+
+        private void OnPollStatus(TriggerPollStatus poll)
+        {
+            if (poll.Success)
+            {
+                TriggerPollText.Text = $"READ OK | coil 3001={( poll.Coil1Value ? "HIGH" : "low" )}  " +
+                    $"coil 3002={( poll.Coil2Value ? "HIGH" : "low" )}  [{DateTime.Now:HH:mm:ss}]";
+                TriggerPollText.Foreground = poll.Coil1Value || poll.Coil2Value ? WarningAmber : DimGray;
+            }
+            else
+            {
+                string msg = poll.ErrorMessage ?? "unknown";
+                string stage = poll.ConsecutiveFailures < 5
+                    ? $"(flush at x5)"
+                    : poll.ConsecutiveFailures < 15
+                        ? $"(reconnect at x15)"
+                        : $"(retrying reconnect)";
+                TriggerPollText.Text = $"READ FAIL (x{poll.ConsecutiveFailures}) | {msg}  {stage}";
+                TriggerPollText.Foreground = ErrorRed;
+            }
         }
 
         private void Model1_Click(object sender, RoutedEventArgs e)
@@ -500,6 +523,7 @@ namespace RoboViz
                     BtnTriggerStop.IsEnabled = false;
                     TriggerStatusText.Text = "Stopped (stream stopped)";
                     TriggerStatusText.Foreground = DimGray;
+                    TriggerPollText.Text = "";
                 }
 
                 // Stop streaming
@@ -846,6 +870,7 @@ namespace RoboViz
             BtnTriggerStop.IsEnabled = false;
             TriggerStatusText.Text = "Stopped";
             TriggerStatusText.Foreground = DimGray;
+            TriggerPollText.Text = "";
         }
 
         private void OnTriggerResult(TriggerResultEvent evt)

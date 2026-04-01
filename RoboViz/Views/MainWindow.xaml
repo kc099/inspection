@@ -485,6 +485,11 @@
                                        FontFamily="{StaticResource ShareTechMono}"
                                        Foreground="#FF6E6E76" FontSize="12"
                                        Margin="0,6,0,0" TextWrapping="Wrap"/>
+
+                            <TextBlock x:Name="TriggerPollText" Text=""
+                                       FontFamily="{StaticResource ShareTechMono}"
+                                       Foreground="#FF505058" FontSize="10"
+                                       Margin="0,4,0,0" TextWrapping="Wrap"/>
                         </StackPanel>
                     </Border>
                 </StackPanel>

@@ -28,6 +28,7 @@ public class InspectionService : IDisposable
 {
     private readonly MaskRCNNDetector _maskrcnn;
     private readonly PatchCoreDetector _patchcore;
+    private readonly YoloSegDetector _yoloSeg;
     private readonly float _scoreThreshold;
     private Dictionary<string, MetricThreshold> _thresholds;
     private string _currentModel;
@@ -43,11 +44,28 @@ public class InspectionService : IDisposable
     {
         _maskrcnn = new MaskRCNNDetector(maskrcnnModelPath, useGpu, progress);
         _patchcore = new PatchCoreDetector(useGpu);
+        _yoloSeg = new YoloSegDetector();
         _scoreThreshold = scoreThreshold;
         _currentModel = modelName;
         _thresholds = LoadThresholdsForModel(modelName);
 
         LoadPatchCoreModel(modelName, progress);
+        LoadYoloSegModel(progress);
+    }
+
+    private void LoadYoloSegModel(IProgress<string>? progress)
+    {
+        string assetsDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets");
+        string yoloPath = Path.Combine(assetsDir, "yolo11_seg_oring.onnx");
+
+        if (!File.Exists(yoloPath))
+        {
+            progress?.Report("YOLO segmentation model not found — using legacy PatchCore preprocessing.");
+            MaskRCNNDetector.LogDiag($"[YOLO-Seg] Model not found at: {yoloPath}");
+            return;
+        }
+
+        _yoloSeg.LoadModel(yoloPath, progress);
     }
 
     public void SwitchModel(string modelName, IProgress<string>? progress = null)
@@ -216,10 +234,9 @@ public class InspectionService : IDisposable
             return result;
         }
 
-        // Preprocess: bin+crop to 720, then resize 660 -> center crop 640
+        // Preprocess: YOLO seg crop ? resize 640, or legacy fallback
         var prepSw = Stopwatch.StartNew();
-        using var img720 = OringMeasurement.BinCrop720(rawImage);
-        using var img640 = PatchCoreDetector.Preprocess(img720);
+        using var img640 = PreprocessPatchCoreImage(rawImage, out long yoloSegMs);
         long prepMs = prepSw.ElapsedMilliseconds;
 
         var pcResult = _patchcore.Detect(img640, out long tensorMs, out long inferenceMs);
@@ -329,9 +346,53 @@ public class InspectionService : IDisposable
         return source;
     }
 
+    /// <summary>
+    /// Preprocess an image for PatchCore inference.
+    /// New pipeline: Resize 2048x1536 ? 640x480 ? YOLO seg ? crop ? resize 640x640.
+    /// Fallback: BinCrop720 ? resize 660 ? center-crop 640x640.
+    /// </summary>
+    private Bitmap PreprocessPatchCoreImage(Bitmap rawImage, out long yoloSegMs)
+    {
+        yoloSegMs = 0;
+
+        if (_yoloSeg.IsLoaded)
+        {
+            using var resized = YoloSegDetector.ResizeTo640x480(rawImage);
+            var cropRect = _yoloSeg.Segment(resized, out yoloSegMs);
+
+            Bitmap source;
+            if (cropRect is { Width: > 10, Height: > 10 })
+            {
+                source = resized.Clone(cropRect.Value, resized.PixelFormat);
+            }
+            else
+            {
+                Debug.WriteLine("[PatchCore] YOLO seg returned no crop — using full resized image.");
+                source = new Bitmap(resized);
+            }
+
+            // Resize crop to 640×640 (bicubic)
+            var result = new Bitmap(640, 640, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+            using (var g = Graphics.FromImage(result))
+            {
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+                g.DrawImage(source, 0, 0, 640, 640);
+            }
+            source.Dispose();
+            return result;
+        }
+
+        // Legacy fallback: BinCrop720 ? resize 660 ? center-crop 640
+        Debug.WriteLine("[PatchCore] YOLO seg not loaded — using legacy BinCrop720 preprocessing.");
+        using var img720 = OringMeasurement.BinCrop720(rawImage);
+        return PatchCoreDetector.Preprocess(img720);
+    }
+
     public void Dispose()
     {
         _maskrcnn?.Dispose();
         _patchcore?.Dispose();
+        _yoloSeg?.Dispose();
     }
 }

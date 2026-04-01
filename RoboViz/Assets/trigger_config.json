@@ -1,5 +1,5 @@
 {
-  "ComPort": "COM7",
+  "ComPort": "COM6",
   "BaudRate": 115200,
   "SlaveId": 1,
   "TriggerCoil_Cam13": 3001,

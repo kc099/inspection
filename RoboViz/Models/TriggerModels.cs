@@ -76,6 +76,22 @@ public enum TriggerType { Trigger1, Trigger2 }
 public readonly record struct TriggerEvent(TriggerType Type, DateTime Timestamp);
 
 /// <summary>
+/// Status of a single poll cycle from the producer thread.
+/// Reported to the UI for live read feedback.
+/// </summary>
+/// <param name="Success">True if both coils were read successfully.</param>
+/// <param name="Coil1Value">Current value of trigger coil 1 (only valid when Success=true).</param>
+/// <param name="Coil2Value">Current value of trigger coil 2 (only valid when Success=true).</param>
+/// <param name="ConsecutiveFailures">Number of consecutive read failures (0 when Success=true).</param>
+/// <param name="ErrorMessage">Error message on failure, null on success.</param>
+public readonly record struct TriggerPollStatus(
+    bool Success,
+    bool Coil1Value,
+    bool Coil2Value,
+    int ConsecutiveFailures,
+    string? ErrorMessage);
+
+/// <summary>
 /// Result posted from the consumer back to the UI.
 /// </summary>
 public class TriggerResultEvent

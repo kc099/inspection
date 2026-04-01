@@ -22,13 +22,15 @@ public class TriggerService : IDisposable
     private readonly TriggerConfig _config;
     private readonly CameraSlotConfig[] _cameraSlots;
     private readonly Action<TriggerResultEvent> _onResult;
+    private readonly Action<TriggerPollStatus>? _onPollStatus;
+    private readonly bool _ownsModbus;
 
-    private readonly BlockingCollection<TriggerEvent> _queue = new(boundedCapacity: 16);
+    private BlockingCollection<TriggerEvent> _queue = new(boundedCapacity: 16);
     private Thread? _producerThread;
     private Thread? _consumerThread;
     private volatile bool _running;
 
-    // Edge detection: only trigger on LOW ? HIGH transition
+    // Edge detection: only trigger on LOW?HIGH transition
     private bool _prevTrigger1;
     private bool _prevTrigger2;
 
@@ -40,13 +42,17 @@ public class TriggerService : IDisposable
     /// <param name="config">Trigger configuration from file.</param>
     /// <param name="cameraSlots">Per-camera configuration (detector, trigger group, delay).</param>
     /// <param name="onResult">Callback invoked on the consumer thread with results (caller must marshal to UI).</param>
+    /// <param name="onPollStatus">Optional callback invoked every poll cycle with read status (caller must marshal to UI).</param>
+    /// <param name="ownsModbus">If true (default), Dispose will also dispose the ModbusService.</param>
     public TriggerService(
         ModbusService modbus,
         CameraManager? cameras,
         InspectionService? inspection,
         TriggerConfig config,
         CameraSlotConfig[] cameraSlots,
-        Action<TriggerResultEvent> onResult)
+        Action<TriggerResultEvent> onResult,
+        Action<TriggerPollStatus>? onPollStatus = null,
+        bool ownsModbus = true)
     {
         _modbus = modbus;
         _cameras = cameras;
@@ -54,6 +60,8 @@ public class TriggerService : IDisposable
         _config = config;
         _cameraSlots = cameraSlots;
         _onResult = onResult;
+        _onPollStatus = onPollStatus;
+        _ownsModbus = ownsModbus;
 
         string camStatus = cameras == null ? "NULL" : (cameras.IsStreaming ? "streaming" : "initialized");
         string inspStatus = inspection == null ? "NULL" : "loaded";
@@ -82,12 +90,25 @@ public class TriggerService : IDisposable
     {
         if (!_running) return;
         _running = false;
-        _queue.CompleteAdding();
 
-        _producerThread?.Join(2000);
-        _consumerThread?.Join(5000);
+        try { _queue.CompleteAdding(); } catch { }
+
+        // Join on a background thread to avoid freezing the UI.
+        // The producer may be stuck in a 1-second Modbus read timeout.
+        var producer = _producerThread;
+        var consumer = _consumerThread;
         _producerThread = null;
         _consumerThread = null;
+
+        if (producer != null || consumer != null)
+        {
+            _ = Task.Run(() =>
+            {
+                producer?.Join(3000);
+                consumer?.Join(3000);
+                Debug.WriteLine("[Trigger] Background threads joined.");
+            });
+        }
 
         MaskRCNNDetector.LogDiag("[Trigger] Producer-consumer stopped.");
     }
@@ -102,6 +123,8 @@ public class TriggerService : IDisposable
         Debug.WriteLine($"[Trigger] Producer started: T1 coil={addrT1}, T2 coil={addrT2}, poll={_config.PollIntervalMs}ms");
 
         int consecutiveFailures = 0;
+        const int FlushThreshold = 5;     // flush + rebuild transport
+        const int ReconnectThreshold = 15; // full close + reopen COM port
 
         while (_running)
         {
@@ -113,8 +136,56 @@ public class TriggerService : IDisposable
                 if (bitsT1 == null || bitsT2 == null)
                 {
                     consecutiveFailures++;
-                    if (consecutiveFailures <= 3 || consecutiveFailures % 50 == 0)
+
+                    if (consecutiveFailures <= 3 || consecutiveFailures % 20 == 0)
                         Debug.WriteLine($"[Trigger] ReadCoils FAILED (x{consecutiveFailures}): {_modbus.LastError}");
+
+                    // Stage 1: flush buffers + rebuild NModbus transport
+                    if (consecutiveFailures == FlushThreshold)
+                    {
+                        Debug.WriteLine($"[Trigger] {consecutiveFailures} failures — flushing bus...");
+                        _onPollStatus?.Invoke(new TriggerPollStatus(
+                            false, false, false, consecutiveFailures, "Flushing bus..."));
+                        if (_modbus.TryRecover())
+                        {
+                            Debug.WriteLine("[Trigger] Bus flush succeeded, resuming polls.");
+                            _prevTrigger1 = false;
+                            _prevTrigger2 = false;
+                            consecutiveFailures = 0;
+                            Thread.Sleep(_config.PollIntervalMs);
+                            continue;
+                        }
+                    }
+
+                    // Stage 2: full serial port close + reopen
+                    if (consecutiveFailures >= ReconnectThreshold &&
+                        consecutiveFailures % ReconnectThreshold == 0)
+                    {
+                        Debug.WriteLine($"[Trigger] {consecutiveFailures} failures — full reconnect...");
+                        _onPollStatus?.Invoke(new TriggerPollStatus(
+                            false, false, false, consecutiveFailures, "Reconnecting COM port..."));
+                        if (_modbus.TryReconnect())
+                        {
+                            Debug.WriteLine("[Trigger] Full reconnect succeeded, resuming polls.");
+                            _prevTrigger1 = false;
+                            _prevTrigger2 = false;
+                            consecutiveFailures = 0;
+                            Thread.Sleep(_config.PollIntervalMs);
+                            continue;
+                        }
+                    }
+
+                    // Periodic flush retry between reconnect attempts
+                    if (consecutiveFailures > FlushThreshold &&
+                        consecutiveFailures < ReconnectThreshold &&
+                        consecutiveFailures % FlushThreshold == 0)
+                    {
+                        _modbus.TryRecover();
+                    }
+
+                    _onPollStatus?.Invoke(new TriggerPollStatus(
+                        false, false, false, consecutiveFailures, _modbus.LastError));
+
                     int backoff = Math.Min(_config.PollIntervalMs * 5, 2000);
                     Thread.Sleep(consecutiveFailures <= 3 ? _config.PollIntervalMs : backoff);
                     continue;
@@ -129,7 +200,8 @@ public class TriggerService : IDisposable
                     consecutiveFailures = 0;
                 }
 
-                Debug.WriteLine($"[Trigger] T1={( t1Now ? 1 : 0 )} T2={( t2Now ? 1 : 0 )}");
+                _onPollStatus?.Invoke(new TriggerPollStatus(
+                    true, t1Now, t2Now, 0, null));
 
                 // Edge detect: LOW ? HIGH
                 if (t1Now && !_prevTrigger1)
@@ -335,6 +407,13 @@ public class TriggerService : IDisposable
     public void Dispose()
     {
         Stop();
-        _queue.Dispose();
+
+        try { _queue.Dispose(); } catch { }
+
+        if (_ownsModbus)
+        {
+            _modbus.Dispose();
+            Debug.WriteLine("[Trigger] Owned ModbusService disposed.");
+        }
     }
 }
