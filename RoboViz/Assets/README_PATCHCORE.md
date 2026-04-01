@@ -2,6 +2,8 @@
 
 This folder contains everything needed to export the trained PatchCore anomaly detection model to ONNX and run inference from a **WPF / C#** application.
 
+> **Last updated**: April 2026 — 384×384 input, 1% coreset (~940 patches), ~100 MB ONNX files.
+
 ---
 
 ## Contents
@@ -9,9 +11,9 @@ This folder contains everything needed to export the trained PatchCore anomaly d
 | File | Description |
 |------|-------------|
 | `export_patchcore_onnx.py` | Python script — exports trained PatchCore to ONNX |
-| `patchcore_model1_resnet50.onnx` | Exported ONNX model for Model 1 (after export) |
-| `patchcore_model2_resnet50.onnx` | Exported ONNX model for Model 2 (after export) |
-| `patchcore_*.json` | Metadata (thresholds, preprocessing params) |
+| `patchcore_model1_cropped_resnet50.onnx` | PatchCore ONNX for Model 1 (100.6 MB) |
+| `patchcore_model2_cropped_resnet50.onnx` | PatchCore ONNX for Model 2 (100.7 MB) |
+| `patchcore_model*_cropped_resnet50.json` | Metadata (input shape, thresholds, preprocessing) |
 | `PatchCoreDetector.cs` | C# — low-level ONNX Runtime wrapper |
 | `PatchCoreInspectionService.cs` | C# — preprocessing + inference + heatmap overlay |
 | `PatchCoreMainWindow.xaml` | WPF UI layout |
@@ -27,27 +29,27 @@ The exported ONNX model is **self-contained** — it includes:
 1. **ImageNet normalization** — input only needs `[0, 1]` scaling
 2. **ResNet-50 backbone** — layers 3 & 4 → 1024-d + 2048-d features
 3. **Feature aggregation** — upsample + concatenate → 3072-d patch descriptors
-4. **Memory bank** — coreset embedded as a constant tensor (~80k × 3072)
+4. **Memory bank** — 1% coreset embedded as a constant tensor (~940 × 3072)
 5. **k-NN scoring** — decomposed squared-distance + top-9 nearest neighbors
 6. **Gaussian smoothing** — 33×33 kernel (σ=4)
-7. **Bilinear upsampling** — 40×40 anomaly map → 640×640
+7. **Bilinear upsampling** — 24×24 anomaly map → 384×384
 
 ```
-Input:  [1, 3, 640, 640]  float32, RGB, [0-1]
+Input:  [1, 3, 384, 384]  float32, RGB, [0-1]
                     │
          ┌──────────┴──────────┐
          │  ImageNet normalize  │
          │  ResNet backbone     │
          │  Feature aggregate   │
          └──────────┬──────────┘
-                    │  (1600, 3072) patches
+                    │  (576, 3072) patches
          ┌──────────┴──────────┐
          │  k-NN vs bank       │
          │  Gaussian smooth    │
-         │  Upsample to 640²   │
+         │  Upsample to 384²   │
          └──────────┬──────────┘
                     │
-    Output: anomaly_score [1]  +  anomaly_map [1, 1, 640, 640]
+    Output: anomaly_score [1]  +  anomaly_map [1, 1, 384, 384]
 ```
 
 ---
@@ -66,33 +68,31 @@ pip install torch torchvision onnx onnxruntime
 cd "F:\standard elastomers"
 conda activate dl
 
-# Export a specific model
-python onnx_export/export_patchcore_onnx.py --model model1 --backbone resnet50
-python onnx_export/export_patchcore_onnx.py --model model2 --backbone resnet50
+# Export from YOLO-cropped results
+python onnx_export/export_patchcore_onnx.py --results-dir patchcore/results_cropped --model model1_cropped
+python onnx_export/export_patchcore_onnx.py --results-dir patchcore/results_cropped --model model2_cropped
 
 # Export all available models
-python onnx_export/export_patchcore_onnx.py --all
+python onnx_export/export_patchcore_onnx.py --results-dir patchcore/results_cropped --all
 ```
 
 The script will:
-1. Load the trained `.pkl` from `patchcore/results/`
+1. Load the trained `.pkl` from `patchcore/results_cropped/`
 2. Build the self-contained ONNX module (backbone + bank + k-NN)
 3. Export to ONNX with **opset 17**
 4. Validate the ONNX graph
 5. Verify PyTorch vs ONNX Runtime scores match
-6. Benchmark CPU and GPU inference latency
-7. Save a metadata JSON with recommended threshold
+6. Benchmark inference latency
+7. Save a metadata JSON
 
 ### Expected output
 
-| Model | Bank Size | ONNX Size | Threshold |
-|-------|-----------|-----------|-----------|
-| Model 1 ResNet-50 | 80,800 × 3072 | ~1.0 GB | ~15.3 |
-| Model 2 ResNet-50 | 104,000 × 3072 | ~1.3 GB | ~13.5 |
+| Model | Bank Size | ONNX Size | 2σ Threshold |
+|-------|-----------|-----------|-------------|
+| Model 1 ResNet-50 | 938 × 3072 | 100.6 MB | 29.76 |
+| Model 2 ResNet-50 | 944 × 3072 | 100.7 MB | 30.60 |
 
-> **Note:** The ONNX files are large because the memory bank (~940 MB for Model 1)
-> is embedded as a constant. This is intentional — it makes deployment a single file
-> and lets ONNX Runtime optimize the k-NN computation on GPU.
+> Bank size is small (~11 MB fp32) thanks to 1% coreset sampling. The bulk of the ONNX file is the ResNet-50 backbone (~90 MB).
 
 ---
 
@@ -107,14 +107,31 @@ cd OringPatchCoreInspection
 
 ### Install NuGet packages
 
+**CPU inference:**
+```
+dotnet add package Microsoft.ML.OnnxRuntime --version 1.21.0
+dotnet add package System.Drawing.Common --version 8.0.0
 ```
 
 **GPU inference** (recommended — CUDA 12 + cuDNN 9):
 ```
-dotnet add package Microsoft.ML.OnnxRuntime.Gpu --version 1.18.0
+dotnet add package Microsoft.ML.OnnxRuntime.Gpu --version 1.21.0
 dotnet add package System.Drawing.Common --version 8.0.0
 ```
-Group>
+
+> Do **not** install both CPU and GPU packages — choose one.
+
+### Add ONNX models to project
+
+```xml
+<ItemGroup>
+  <None Update="patchcore_model1_cropped_resnet50.onnx">
+    <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+  </None>
+  <None Update="patchcore_model2_cropped_resnet50.onnx">
+    <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+  </None>
+</ItemGroup>
 ```
 
 ---
@@ -125,24 +142,23 @@ Group>
 
 | Name | Shape | Type | Notes |
 |------|-------|------|-------|
-| `image` | `[1, 3, 640, 640]` | float32 | RGB, scaled to [0, 1] |
+| `image` | `[1, 3, 384, 384]` | float32 | RGB, scaled to [0, 1] |
 
-**Preprocessing in C#** (mirrors Python pipeline):
-1. Resize to **660×660** (bicubic interpolation)
-2. Center-crop to **640×640** (remove 10px from each edge)
-3. BGR → RGB conversion
+**Preprocessing in C#:**
+1. Take YOLO crop (variable size, typically ~370×260)
+2. **Bicubic resize** to **384×384** (no padding)
+3. BGR → **RGB** conversion
 4. Scale pixel values to **[0, 1]** (divide by 255)
-5. Reshape to CHW layout
+5. Reshape to **CHW** layout → `[1, 3, 384, 384]`
 
-> ImageNet normalization (`mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]`)
-> is built into the ONNX model. C# only needs the [0, 1] scaling.
+> ImageNet normalization is built into the ONNX model. C# only needs [0, 1] scaling.
 
 ### Output
 
 | Name | Shape | Type | Notes |
 |------|-------|------|-------|
 | `anomaly_score` | `[1]` | float32 | Image-level anomaly score (max of heatmap) |
-| `anomaly_map` | `[1, 1, 640, 640]` | float32 | Per-pixel anomaly heatmap |
+| `anomaly_map` | `[1, 1, 384, 384]` | float32 | Per-pixel anomaly heatmap |
 
 **Decision logic:**
 ```
@@ -150,8 +166,10 @@ if anomaly_score > threshold → REJECT (defect detected)
 else                         → PASS   (good part)
 ```
 
-The `recommended_threshold` is provided in the `.json` metadata file,
-computed as `(good_max + defect_min) / 2` from training results.
+| Model | 2σ Threshold |
+|-------|-------------|
+| Model 1 | **29.76** |
+| Model 2 | **30.60** |
 
 ---
 
@@ -167,11 +185,10 @@ Low-level ONNX Runtime wrapper:
 ### `PatchCoreInspectionService.cs`
 
 Production-ready service layer:
-- `Preprocess(Bitmap)` — Resize 660 → center-crop 640
+- `Preprocess(Bitmap)` — Bicubic resize crop to 384×384
 - `Inspect(Bitmap)` — Full pipeline: preprocess → detect → heatmap overlay
 - `DrawHeatmapOverlay()` — Jet colormap overlay (blue → green → yellow → red)
 - `BitmapToBitmapSource()` — GDI+ → WPF-compatible `BitmapSource`
-- `LoadMetadata()` — Reads threshold and settings from the export JSON
 
 ### `PatchCoreMainWindow.xaml.cs`
 
@@ -179,9 +196,10 @@ Example WPF UI:
 - Auto-discovers `patchcore_*.onnx` models in the application directory
 - Model dropdown for switching between Model 1 / Model 2
 - Side-by-side display: original image + anomaly heatmap
-- Threshold slider with live re-evaluation (no re-inference needed)
-- Overlay opacity slider for heatmap blending
-- Async inference on background thread (UI stays responsive)
+- Threshold slider for adjusting sensitivity
+- Async inference on background thread
+
+> **Note**: The C# files reference the old 640×640 input size. Update the resize target to **384×384**, model filenames to `*_cropped_*`, and thresholds to 29.76 / 30.60.
 
 ---
 
@@ -193,42 +211,18 @@ Example WPF UI:
 - CUDA Toolkit 12.x + cuDNN 9.x
 - `Microsoft.ML.OnnxRuntime.Gpu` NuGet package
 
-### Enable in code
-
-```csharp
-// In PatchCoreMainWindow.xaml.cs, change:
-_service = new PatchCoreInspectionService(entry.OnnxPath, entry.Threshold, useGpu: true);
-```
-
 ### Expected performance
 
-| Provider | Latency (640×640) | VRAM | Notes |
-|----------|-------------------|------|-------|
-| CPU (4 threads) | ~2–5 s | 0 | No GPU needed |
-| CUDA GPU | ~100–200 ms | ~1.5–2 GB | RTX 3060 tested |
-| TensorRT | ~50–100 ms | ~1.5 GB | Via `AppendExecutionProvider_Tensorrt` |
+| Device | Latency |
+|--------|---------|
+| GPU (ONNX Runtime CUDA) | ~9-10 ms |
+| CPU (ONNX Runtime) | ~100-200 ms |
 
 ---
 
-## 7.  Comparison: PatchCore vs Mask R-CNN
+## 7.  Deployment Checklist
 
-| Aspect | PatchCore | Mask R-CNN |
-|--------|-----------|------------|
-| Type | Anomaly detection (unsupervised) | Object detection (supervised) |
-| Training | Only needs good/normal images | Needs annotated defect masks |
-| Output | Anomaly score + heatmap | Bounding boxes + instance masks |
-| Use case | "Is this part defective?" | "Where exactly is the defect?" |
-| ONNX size | ~1 GB (large memory bank) | ~168 MB |
-| Inference | Score-based threshold | Detection-based threshold |
-
-Both models can run in the same WPF application. The existing Mask R-CNN files
-(`MaskRCNNDetector.cs`, `InspectionService.cs`) remain unchanged.
-
----
-
-## 8.  Deployment Checklist
-
-- [ ] Export ONNX model: `python onnx_export/export_patchcore_onnx.py --model model1`
+- [ ] Export ONNX models: `python onnx_export/export_patchcore_onnx.py --results-dir patchcore/results_cropped --all`
 - [ ] Copy `.onnx` + `.json` alongside the executable
 - [ ] Install matching NuGet package (CPU or GPU)
 - [ ] If GPU: install CUDA 12 + cuDNN 9 on target machine
@@ -239,28 +233,27 @@ Both models can run in the same WPF application. The existing Mask R-CNN files
 
 ---
 
-## 9.  Troubleshooting
+## 8.  Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
 | ONNX export fails (protobuf size) | Use `--opset 17`; ensure onnx ≥ 1.14 |
-| ONNX Runtime out of memory (GPU) | Reduce `coreset_ratio` during training, or use CPU |
-| Score mismatch vs Python | Verify preprocessing: resize 660 → crop 640, RGB [0-1] |
-| Very slow CPU inference | Expected ~2-5s; use GPU for production |
+| Score mismatch vs Python | Verify preprocessing: bicubic resize to 384×384, RGB [0-1] |
 | `DllNotFoundException` | Ensure `onnxruntime.dll` is in output directory |
-| Model dropdown empty | Place `patchcore_*.onnx` in the application directory |
+| Model dropdown empty | Place `patchcore_*_cropped_*.onnx` in the application directory |
 
 ---
 
-## 10.  Quick Start Summary
+## 9.  Quick Start Summary
 
 ```
 1.  conda activate dl
-2.  python onnx_export/export_patchcore_onnx.py --all
+2.  python onnx_export/export_patchcore_onnx.py --results-dir patchcore/results_cropped --all
 3.  dotnet new wpf -n OringPatchCoreInspection
-4.  dotnet add package Microsoft.ML.OnnxRuntime
+4.  dotnet add package Microsoft.ML.OnnxRuntime.Gpu
 5.  dotnet add package System.Drawing.Common
 6.  Copy PatchCore*.cs, *.xaml, *.onnx, *.json into project
-7.  dotnet run
-8.  Select model → Load Image → Analyze → see score + heatmap + verdict
+7.  Update resize target to 384×384, thresholds to 29.76 / 30.60
+8.  dotnet run
+9.  Select model → Load Image → Analyze → see score + heatmap + verdict
 ```

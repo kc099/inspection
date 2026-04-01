@@ -17,12 +17,14 @@ namespace RoboViz;
 ///   - PatchCore for CAM 2, 4 (anomaly detection)
 ///
 /// Pipeline per frame:
-///   1. Geometric measurement on raw image (2448x2048)
-///   2. Evaluate rework/reject thresholds
-///   3. If geometric PASS:
-///      - Mask R-CNN: bin+crop to 720x720 then detect
-///      - PatchCore: resize 660 then center-crop 640x640 then detect
-///   4. Final verdict: REWORK / REJECT / PASS
+///   Mask R-CNN (CAM 1, 3):
+///     1. Geometric measurement on raw image
+///     2. Evaluate rework/reject thresholds
+///     3. If geometric PASS: bin+crop to 720x720 then detect
+///   PatchCore (CAM 2, 4 — side view, no hole visible):
+///     1. 4x4 bin to 512x384, YOLO seg crop, resize 384x384
+///     2. PatchCore anomaly detection (no geometric measurement)
+///   Final verdict: REWORK / REJECT / PASS
 /// </summary>
 public class InspectionService : IDisposable
 {
@@ -78,12 +80,13 @@ public class InspectionService : IDisposable
         LoadPatchCoreModel(modelName, progress);
     }
 
+    private const float PatchCoreHardcodedThreshold = 15.0f;
+
     private void LoadPatchCoreModel(string modelName, IProgress<string>? progress)
     {
         string assetsDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets");
         string suffix = modelName == "Model 1" ? "model1" : "model2";
-        string onnxPath = Path.Combine(assetsDir, $"patchcore_{suffix}_resnet50_fp16.onnx");
-        string jsonPath = Path.Combine(assetsDir, $"patchcore_{suffix}_resnet50.json");
+        string onnxPath = Path.Combine(assetsDir, $"patchcore_{suffix}_cropped_resnet50_fp16.onnx");
 
         if (!File.Exists(onnxPath))
         {
@@ -91,12 +94,7 @@ public class InspectionService : IDisposable
             return;
         }
 
-        float threshold = 15.0f;
-        var meta = PatchCoreDetector.LoadMetadata(jsonPath);
-        if (meta?.recommended_threshold != null)
-            threshold = meta.recommended_threshold.Value;
-
-        _patchcore.LoadModel(onnxPath, threshold, progress);
+        _patchcore.LoadModel(onnxPath, PatchCoreHardcodedThreshold, progress);
     }
 
     private static Dictionary<string, MetricThreshold> LoadThresholdsForModel(string modelName)
@@ -217,13 +215,17 @@ public class InspectionService : IDisposable
 
     /// <summary>
     /// Run PatchCore inspection (CAM 2, 4).
+    /// No geometric measurement — side-view cameras may not have a visible hole.
+    /// Pipeline: 4×4 bin ? YOLO seg ? crop ? resize 384×384 ? PatchCore inference.
     /// </summary>
     public InspectionResult InspectPatchCore(Bitmap rawImage)
     {
         var totalSw = Stopwatch.StartNew();
-        var result = RunGeoEvaluation(rawImage, "PatchCore", totalSw, out string geoVerdict);
-        if (geoVerdict != "PASS")
-            return result;
+
+        var result = new InspectionResult
+        {
+            DetectorType = "PatchCore",
+        };
 
         if (!_patchcore.IsLoaded)
         {
@@ -234,12 +236,12 @@ public class InspectionService : IDisposable
             return result;
         }
 
-        // Preprocess: YOLO seg crop ? resize 640, or legacy fallback
+        // Preprocess: 4x4 bin 512x384, YOLO seg crop, resize 384x384
         var prepSw = Stopwatch.StartNew();
-        using var img640 = PreprocessPatchCoreImage(rawImage, out long yoloSegMs);
+        using var patchInput = PreprocessPatchCoreImage(rawImage, out long yoloSegMs);
         long prepMs = prepSw.ElapsedMilliseconds;
 
-        var pcResult = _patchcore.Detect(img640, out long tensorMs, out long inferenceMs);
+        var pcResult = _patchcore.Detect(patchInput, out long tensorMs, out long inferenceMs);
 
         result.TensorMs = tensorMs;
         result.InferenceMs = inferenceMs;
@@ -254,7 +256,7 @@ public class InspectionService : IDisposable
             result.FailReasons = [$"Anomaly detected (score: {pcResult.AnomalyScore:F2} > {_patchcore.Threshold:F2})"];
 
             var overlaySw = Stopwatch.StartNew();
-            result.OverlayImage = PatchCoreDetector.DrawHeatmapOverlay(img640, pcResult.AnomalyMap);
+            result.OverlayImage = PatchCoreDetector.DrawHeatmapOverlay(patchInput, pcResult.AnomalyMap);
             result.OverlayMs = overlaySw.ElapsedMilliseconds;
         }
         else
@@ -348,45 +350,110 @@ public class InspectionService : IDisposable
 
     /// <summary>
     /// Preprocess an image for PatchCore inference.
-    /// New pipeline: Resize 2048x1536 ? 640x480 ? YOLO seg ? crop ? resize 640x640.
-    /// Fallback: BinCrop720 ? resize 660 ? center-crop 640x640.
+    /// New pipeline: 4x4 bin 2048x1536 to 512x384, YOLO seg crop, resize 384x384.
+    /// Fallback: BinCrop720, resize 400, center-crop 384x384.
     /// </summary>
     private Bitmap PreprocessPatchCoreImage(Bitmap rawImage, out long yoloSegMs)
     {
         yoloSegMs = 0;
 
+        // Step 1: 4x4 binning 2048x1536 to 512x384
+        using var binned = BinTo512x384(rawImage);
+
         if (_yoloSeg.IsLoaded)
         {
-            using var resized = YoloSegDetector.ResizeTo640x480(rawImage);
-            var cropRect = _yoloSeg.Segment(resized, out yoloSegMs);
+            // Step 2: YOLO segmentation on 512x384 directly (model accepts this size)
+            var cropRect = _yoloSeg.Segment(binned, out yoloSegMs);
 
             Bitmap source;
             if (cropRect is { Width: > 10, Height: > 10 })
             {
-                source = resized.Clone(cropRect.Value, resized.PixelFormat);
+                source = binned.Clone(cropRect.Value, binned.PixelFormat);
             }
             else
             {
-                Debug.WriteLine("[PatchCore] YOLO seg returned no crop — using full resized image.");
-                source = new Bitmap(resized);
+                Debug.WriteLine("[PatchCore] YOLO seg returned no crop, using full binned image.");
+                source = new Bitmap(binned);
             }
 
-            // Resize crop to 640×640 (bicubic)
-            var result = new Bitmap(640, 640, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+            // Step 3: Resize crop to 384x384
+            var result = new Bitmap(384, 384, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
             using (var g = Graphics.FromImage(result))
             {
                 g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
                 g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
-                g.DrawImage(source, 0, 0, 640, 640);
+                g.DrawImage(source, 0, 0, 384, 384);
             }
             source.Dispose();
             return result;
         }
 
-        // Legacy fallback: BinCrop720 ? resize 660 ? center-crop 640
-        Debug.WriteLine("[PatchCore] YOLO seg not loaded — using legacy BinCrop720 preprocessing.");
+        // Legacy fallback: BinCrop720, resize 400, center-crop 384
+        Debug.WriteLine("[PatchCore] YOLO seg not loaded, using legacy BinCrop720 preprocessing.");
         using var img720 = OringMeasurement.BinCrop720(rawImage);
         return PatchCoreDetector.Preprocess(img720);
+    }
+
+    /// <summary>
+    /// 4x4 binning: reduce 2048x1536 to 512x384 by averaging each 4x4 pixel block.
+    /// </summary>
+    private static Bitmap BinTo512x384(Bitmap original)
+    {
+        const int bin = 4;
+        int outW = original.Width / bin;
+        int outH = original.Height / bin;
+
+        var srcRect = new Rectangle(0, 0, original.Width, original.Height);
+        var srcData = original.LockBits(srcRect, ImageLockMode.ReadOnly,
+            System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+
+        var result = new Bitmap(outW, outH, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+        var dstRect = new Rectangle(0, 0, outW, outH);
+        var dstData = result.LockBits(dstRect, ImageLockMode.WriteOnly,
+            System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+
+        try
+        {
+            int srcStride = srcData.Stride;
+            int dstStride = dstData.Stride;
+            byte[] srcPixels = new byte[srcStride * original.Height];
+            byte[] dstPixels = new byte[dstStride * outH];
+            Marshal.Copy(srcData.Scan0, srcPixels, 0, srcPixels.Length);
+
+            int binArea = bin * bin;
+            for (int oy = 0; oy < outH; oy++)
+            {
+                int dstRow = oy * dstStride;
+                for (int ox = 0; ox < outW; ox++)
+                {
+                    int sumB = 0, sumG = 0, sumR = 0;
+                    for (int dy = 0; dy < bin; dy++)
+                    {
+                        int srcRow = (oy * bin + dy) * srcStride;
+                        for (int dx = 0; dx < bin; dx++)
+                        {
+                            int srcIdx = srcRow + (ox * bin + dx) * 3;
+                            sumB += srcPixels[srcIdx];
+                            sumG += srcPixels[srcIdx + 1];
+                            sumR += srcPixels[srcIdx + 2];
+                        }
+                    }
+                    int dstIdx = dstRow + ox * 3;
+                    dstPixels[dstIdx] = (byte)(sumB / binArea);
+                    dstPixels[dstIdx + 1] = (byte)(sumG / binArea);
+                    dstPixels[dstIdx + 2] = (byte)(sumR / binArea);
+                }
+            }
+
+            Marshal.Copy(dstPixels, 0, dstData.Scan0, dstPixels.Length);
+        }
+        finally
+        {
+            original.UnlockBits(srcData);
+            result.UnlockBits(dstData);
+        }
+
+        return result;
     }
 
     public void Dispose()

@@ -16,8 +16,8 @@ namespace RoboViz;
 
 /// <summary>
 /// PatchCore ONNX inference wrapper for O-Ring anomaly detection.
-/// Input:  [1, 3, 640, 640] float32, RGB, [0-1]
-/// Output: anomaly_score [1] + anomaly_map [1, 1, 640, 640]
+/// Input:  [1, 3, 384, 384] float32, RGB, [0-1]
+/// Output: anomaly_score [1] + anomaly_map [1, 1, 384, 384]
 /// Attempts CUDA GPU with pre-flight checks; falls back to CPU automatically.
 /// </summary>
 public class PatchCoreDetector : IDisposable
@@ -27,7 +27,7 @@ public class PatchCoreDetector : IDisposable
     private string? _scoreOutputName;
     private string? _mapOutputName;
     private readonly ThreadLocal<float[]> _inputBuffer;
-    private const int InputSize = 640;
+    private const int InputSize = 384;
     private const int BufferLength = 1 * 3 * InputSize * InputSize;
 
     private float _threshold;
@@ -263,9 +263,9 @@ public class PatchCoreDetector : IDisposable
     }
 
     /// <summary>
-    /// Preprocess: resize to 660x660, center-crop to 640x640.
+    /// Preprocess: resize to 400x400, center-crop to 384x384.
     /// </summary>
-    public static Bitmap Preprocess(Bitmap input, int resizeSize = 660, int cropSize = 640)
+    public static Bitmap Preprocess(Bitmap input, int resizeSize = 400, int cropSize = 384)
     {
         var resized = new Bitmap(resizeSize, resizeSize, PixelFormat.Format24bppRgb);
         using (var g = Graphics.FromImage(resized))

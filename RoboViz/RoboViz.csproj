@@ -31,16 +31,10 @@
     <None Update="Assets\yolo11_seg_oring.onnx">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="Assets\patchcore_model1_resnet50_fp16.onnx">
+    <None Update="Assets\patchcore_model1_cropped_resnet50_fp16.onnx">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="Assets\patchcore_model1_resnet50.json">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="Assets\patchcore_model2_resnet50_fp16.onnx">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="Assets\patchcore_model2_resnet50.json">
+    <None Update="Assets\patchcore_model2_cropped_resnet50_fp16.onnx">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Update="Assets\model1_tuned_thresholds.json">

@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
@@ -17,25 +16,24 @@ namespace RoboViz;
 /// Segments the O-ring from the background and returns the crop bounding box.
 ///
 /// Pipeline:
-///   Camera 2048×1536 ? Resize 640×480 ? Letterbox 640×640 ? YOLO inference
-///   ? Segmentation mask ? Bounding box in 640×480 coords
+///   Camera 2048×1536 ? 4×4 bin 512×384 ? YOLO inference
+///   ? Segmentation mask ? Bounding box in 512×384 coords
 ///
-/// Input:   "images"   [1, 3, 640, 640]  float32, RGB, [0-1]
-/// Output0: "output0"  [1, 37, 8400]     float32  (cx, cy, w, h, conf, 32 mask coeffs)
-/// Output1: "output1"  [1, 32, 160, 160] float32  (mask prototypes)
+/// Input:   "images"   [1, 3, 384, 512]  float32, RGB, [0-1]
+/// Output0: "output0"  [1, 37, 4032]     float32  (cx, cy, w, h, conf, 32 mask coeffs)
+/// Output1: "output1"  [1, 32, 96, 128]  float32  (mask prototypes)
 /// </summary>
 public class YoloSegDetector : IDisposable
 {
     private InferenceSession? _session;
     private string? _inputName;
 
-    private const int InputSize = 640;
-    private const int ResizedW = 640;
-    private const int ResizedH = 480;
-    private const int LetterboxPadY = (InputSize - ResizedH) / 2; // 80
-    private const int NumDetections = 8400;
+    private const int InputW = 512;
+    private const int InputH = 384;
+    private const int NumDetections = 4032;
     private const int NumMaskCoeffs = 32;
-    private const int ProtoSize = 160;
+    private const int ProtoW = 128;
+    private const int ProtoH = 96;
     private const float ConfThreshold = 0.25f;
     private const float MaskThreshold = 0.5f;
 
@@ -63,20 +61,20 @@ public class YoloSegDetector : IDisposable
     }
 
     /// <summary>
-    /// Segment the O-ring from a 640×480 resized image.
-    /// Returns the crop rectangle in 640×480 coordinates, or null if no O-ring detected.
+    /// Segment the O-ring from a 512×384 binned image.
+    /// Returns the crop rectangle in 512×384 coordinates, or null if no O-ring detected.
     /// </summary>
-    public Rectangle? Segment(Bitmap resized640x480, out long inferenceMs)
+    public Rectangle? Segment(Bitmap image512x384, out long inferenceMs)
     {
         inferenceMs = 0;
         if (_session == null || _inputName == null)
             return null;
 
-        // Step 1: Letterbox 640×480 ? 640×640 input tensor (zeros = black padding)
-        var inputBuffer = new float[3 * InputSize * InputSize];
-        FillLetterboxBuffer(resized640x480, inputBuffer);
+        // Step 1: Fill [1, 3, 384, 512] input tensor directly (no letterboxing)
+        var inputBuffer = new float[3 * InputH * InputW];
+        FillInputBuffer(image512x384, inputBuffer);
 
-        var tensor = new DenseTensor<float>(inputBuffer, [1, 3, InputSize, InputSize]);
+        var tensor = new DenseTensor<float>(inputBuffer, [1, 3, InputH, InputW]);
         var inputs = new List<NamedOnnxValue>
         {
             NamedOnnxValue.CreateFromTensor(_inputName, tensor)
@@ -88,9 +86,9 @@ public class YoloSegDetector : IDisposable
         inferenceMs = sw.ElapsedMilliseconds;
 
         var resultList = results.ToList();
-        // output0: [1, 37, 8400] — detections (attributes × candidates)
+        // output0: [1, 37, 4032] — detections (attributes × candidates)
         var det0 = resultList[0].AsTensor<float>() as DenseTensor<float>;
-        // output1: [1, 32, 160, 160] — mask prototypes
+        // output1: [1, 32, 96, 128] — mask prototypes
         var protos = resultList[1].AsTensor<float>() as DenseTensor<float>;
 
         if (det0 == null || protos == null)
@@ -103,7 +101,7 @@ public class YoloSegDetector : IDisposable
         var protoSpan = protos.Buffer.Span;
 
         // Step 3: Find best detection (highest confidence > threshold)
-        // output0 layout: [1, 37, 8400] — detSpan index = attr * 8400 + det_idx
+        // output0 layout: [1, 37, 4032] — detSpan index = attr * 4032 + det_idx
         int bestIdx = -1;
         float bestConf = ConfThreshold;
         for (int i = 0; i < NumDetections; i++)
@@ -129,15 +127,15 @@ public class YoloSegDetector : IDisposable
         for (int k = 0; k < NumMaskCoeffs; k++)
             coeffs[k] = detSpan[(5 + k) * NumDetections + bestIdx];
 
-        // Step 5: Compute mask at 160×160 = sigmoid(coeffs · protos)
-        // proto layout: [1, 32, 160, 160] — protoSpan index = k * ProtoSize² + y * ProtoSize + x
-        int minX = ProtoSize, minY = ProtoSize, maxX = -1, maxY = -1;
-        int protoPlane = ProtoSize * ProtoSize;
+        // Step 5: Compute mask at 128×96 = sigmoid(coeffs · protos)
+        // proto layout: [1, 32, 96, 128] — protoSpan index = k * ProtoH*ProtoW + y * ProtoW + x
+        int minX = ProtoW, minY = ProtoH, maxX = -1, maxY = -1;
+        int protoPlane = ProtoH * ProtoW;
 
-        for (int y = 0; y < ProtoSize; y++)
+        for (int y = 0; y < ProtoH; y++)
         {
-            int yOff = y * ProtoSize;
-            for (int x = 0; x < ProtoSize; x++)
+            int yOff = y * ProtoW;
+            for (int x = 0; x < ProtoW; x++)
             {
                 float val = 0;
                 int px = yOff + x;
@@ -162,18 +160,19 @@ public class YoloSegDetector : IDisposable
             return null;
         }
 
-        // Step 6: Scale from 160 ? 640 and adjust for letterbox Y offset
-        float scale = InputSize / (float)ProtoSize; // 4.0
-        int bx1 = (int)(minX * scale);
-        int by1 = (int)(minY * scale) - LetterboxPadY;
-        int bx2 = (int)((maxX + 1) * scale);
-        int by2 = (int)((maxY + 1) * scale) - LetterboxPadY;
+        // Step 6: Scale from proto (128×96) to input (512×384)
+        float scaleX = InputW / (float)ProtoW; // 4.0
+        float scaleY = InputH / (float)ProtoH; // 4.0
+        int bx1 = (int)(minX * scaleX);
+        int by1 = (int)(minY * scaleY);
+        int bx2 = (int)((maxX + 1) * scaleX);
+        int by2 = (int)((maxY + 1) * scaleY);
 
-        // Clamp to 640×480 image bounds
+        // Clamp to 512×384 image bounds
         bx1 = Math.Max(0, bx1);
         by1 = Math.Max(0, by1);
-        bx2 = Math.Min(ResizedW, bx2);
-        by2 = Math.Min(ResizedH, by2);
+        bx2 = Math.Min(InputW, bx2);
+        by2 = Math.Min(InputH, by2);
 
         int cropW = bx2 - bx1;
         int cropH = by2 - by1;
@@ -184,34 +183,21 @@ public class YoloSegDetector : IDisposable
             return null;
         }
 
-        Debug.WriteLine($"[YOLO-Seg] Crop: ({bx1},{by1})-({bx2},{by2}) = {cropW}x{cropH} on 640x480");
+        Debug.WriteLine($"[YOLO-Seg] Crop: ({bx1},{by1})-({bx2},{by2}) = {cropW}x{cropH} on 512x384");
         return new Rectangle(bx1, by1, cropW, cropH);
     }
 
     /// <summary>
-    /// Resize original camera image (2048×1536) to 640×480.
+    /// Fill the input buffer: [3, 384, 512] float32, RGB, [0-1].
+    /// No letterboxing — the model accepts 512×384 directly.
     /// </summary>
-    public static Bitmap ResizeTo640x480(Bitmap original)
+    private static void FillInputBuffer(Bitmap image, float[] buffer)
     {
-        var resized = new Bitmap(ResizedW, ResizedH, PixelFormat.Format24bppRgb);
-        using var g = Graphics.FromImage(resized);
-        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-        g.DrawImage(original, 0, 0, ResizedW, ResizedH);
-        return resized;
-    }
-
-    /// <summary>
-    /// Fill the letterbox input buffer: 640×480 image centered in 640×640 with black padding.
-    /// Output format: [3, 640, 640] float32, RGB, [0-1].
-    /// </summary>
-    private static void FillLetterboxBuffer(Bitmap resized480, float[] buffer)
-    {
-        int w = resized480.Width;
-        int h = resized480.Height;
+        int w = image.Width;
+        int h = image.Height;
 
         var rect = new Rectangle(0, 0, w, h);
-        var bmpData = resized480.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+        var bmpData = image.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
         try
         {
             int stride = bmpData.Stride;
@@ -219,14 +205,13 @@ public class YoloSegDetector : IDisposable
             Marshal.Copy(bmpData.Scan0, pixels, 0, pixels.Length);
 
             int planeR = 0;
-            int planeG = InputSize * InputSize;
-            int planeB = 2 * InputSize * InputSize;
+            int planeG = h * w;
+            int planeB = 2 * h * w;
 
             for (int y = 0; y < h; y++)
             {
                 int srcRow = y * stride;
-                int yPad = y + LetterboxPadY;
-                int dstRow = yPad * InputSize;
+                int dstRow = y * w;
 
                 for (int x = 0; x < w; x++)
                 {
@@ -240,7 +225,7 @@ public class YoloSegDetector : IDisposable
         }
         finally
         {
-            resized480.UnlockBits(bmpData);
+            image.UnlockBits(bmpData);
         }
     }
 
