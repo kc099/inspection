@@ -1,3 +1,7 @@
+using System;
+using System.IO;
+using System.Text.Json;
+
 namespace RoboViz;
 
 /// <summary>
@@ -23,4 +27,29 @@ public class CameraSlotConfig
     /// Accounts for different exposure times per camera.
     /// </summary>
     public int CaptureDelayMs { get; set; } = 50;
+
+    private static readonly string DefaultPath =
+        Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets", "camera_slots.json");
+
+    private static readonly JsonSerializerOptions JsonOpts = new()
+    {
+        WriteIndented = true,
+    };
+
+    /// <summary>Save camera slot configs to JSON.</summary>
+    public static void Save(CameraSlotConfig[] configs, string? path = null)
+    {
+        path ??= DefaultPath;
+        string json = JsonSerializer.Serialize(configs, JsonOpts);
+        File.WriteAllText(path, json);
+    }
+
+    /// <summary>Load camera slot configs from JSON. Returns null if file doesn't exist.</summary>
+    public static CameraSlotConfig[]? Load(string? path = null)
+    {
+        path ??= DefaultPath;
+        if (!File.Exists(path)) return null;
+        string json = File.ReadAllText(path);
+        return JsonSerializer.Deserialize<CameraSlotConfig[]>(json);
+    }
 }

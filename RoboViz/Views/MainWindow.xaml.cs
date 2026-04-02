@@ -21,7 +21,6 @@ namespace RoboViz
         private TriggerService? _triggerService;
         private Bitmap? _currentImage;
         private CameraManager? _cameraManager;
-        private DispatcherTimer? _streamTimer;
         private bool _isStreaming;
 
         private System.Windows.Controls.Image[] _imageDisplays = null!;
@@ -31,19 +30,9 @@ namespace RoboViz
         private const int FrameCount = 4;
         private int _activeFrameCount = 4;
 
-        // Per-camera configuration (set via CameraSetupDialog)
-        private CameraSlotConfig[] _cameraSlots =
-        [
-            new() { Slot = 0, TriggerGroup = 1, Detector = "MaskRCNN",  CaptureDelayMs = 50 },
-            new() { Slot = 1, TriggerGroup = 1, Detector = "MaskRCNN",  CaptureDelayMs = 50 },
-            new() { Slot = 2, TriggerGroup = 1, Detector = "PatchCore", CaptureDelayMs = 50 },
-            new() { Slot = 3, TriggerGroup = 2, Detector = "PatchCore", CaptureDelayMs = 50 },
-        ];
+        // Per-camera configuration (set via CameraSetupDialog, persisted to camera_slots.json)
+        private CameraSlotConfig[] _cameraSlots = LoadOrDefaultSlots();
 
-        // Frame sequence tracking for stream preview optimization
-        private readonly long[] _lastDisplayedSequence = new long[4];
-        private long _streamFrameCount;
-        private long _streamSkipCount;
 
         private static readonly SolidColorBrush PassGreen = new(System.Windows.Media.Color.FromRgb(76, 175, 80));
         private static readonly SolidColorBrush FailRed = new(System.Windows.Media.Color.FromRgb(244, 67, 54));
@@ -398,6 +387,21 @@ namespace RoboViz
         private string GetDetectorForCamera(int camIndex) =>
             _cameraSlots[camIndex].Detector;
 
+        private static CameraSlotConfig[] LoadOrDefaultSlots()
+        {
+            var saved = CameraSlotConfig.Load();
+            if (saved is { Length: 4 })
+                return saved;
+
+            return
+            [
+                new() { Slot = 0, TriggerGroup = 1, Detector = "MaskRCNN",  CaptureDelayMs = 50 },
+                new() { Slot = 1, TriggerGroup = 1, Detector = "MaskRCNN",  CaptureDelayMs = 50 },
+                new() { Slot = 2, TriggerGroup = 1, Detector = "PatchCore", CaptureDelayMs = 50 },
+                new() { Slot = 3, TriggerGroup = 2, Detector = "PatchCore", CaptureDelayMs = 50 },
+            ];
+        }
+
         private void UpdateCameraConfigSummary()
         {
             var lines = new List<string>();
@@ -546,8 +550,6 @@ namespace RoboViz
                 }
 
                 // Stop streaming
-                _streamTimer?.Stop();
-                _streamTimer = null;
                 _cameraManager?.StopStreaming();
                 _isStreaming = false;
                 BtnStream.Content = "Start Stream";
@@ -573,8 +575,10 @@ namespace RoboViz
                 if (dialog.ShowDialog() != true || dialog.ResultConfigs == null)
                     return;
 
-                // Apply the configuration
+                // Apply and persist the configuration
                 _cameraSlots = dialog.ResultConfigs;
+                try { CameraSlotConfig.Save(_cameraSlots); }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[Config] Save failed: {ex.Message}"); }
                 CameraManager.CameraIndices = _cameraSlots
                     .Select(c => c.DeviceIndex)
                     .ToArray();
@@ -594,60 +598,12 @@ namespace RoboViz
                     ? $"Model: ready  [{_service.ActiveProvider}]  ({_service.CurrentModel}) | Cameras ready"
                     : "Cameras ready (no model)");
 
-                // Start live preview timer
-                _streamTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
-                _streamTimer.Tick += StreamTimer_Tick;
-                _streamTimer.Start();
-                StatusText.Text += " | Live preview ON";
-
                 // Auto-start trigger when manually starting stream
                 AutoStartTrigger();
             }
             catch (Exception ex)
             {
                 StatusText.Text = $"Camera error: {ex.Message}";
-            }
-        }
-
-        // Optional: Live preview for debugging/setup — only used if user manually clicks 'Start Stream'
-        private void StreamTimer_Tick(object? sender, EventArgs e)
-        {
-            if (!_isStreaming || _cameraManager == null || _streamTimer == null) return;
-
-            try
-            {
-                int frameCount = _activeFrameCount;
-                int updatedCount = 0;
-
-                for (int i = 0; i < frameCount; i++)
-                {
-                    var (frame, sequence) = _cameraManager.GetLatestFrameWithSequence(i);
-                    if (frame == null) continue;
-
-                    if (sequence == _lastDisplayedSequence[i])
-                    {
-                        _streamSkipCount++;
-                        frame.Dispose();
-                        continue;
-                    }
-
-                    _imageDisplays[i].Source = InspectionService.BitmapToBitmapSource(frame);
-                    _lastDisplayedSequence[i] = sequence;
-                    _streamFrameCount++;
-                    updatedCount++;
-                    frame.Dispose();
-                }
-
-                if (_streamFrameCount > 0 && _streamFrameCount % 50 == 0)
-                {
-                    long total = _streamFrameCount + _streamSkipCount;
-                    double utilization = total > 0 ? (_streamFrameCount * 100.0 / total) : 0;
-                    Debug.WriteLine($"[StreamPreview] FPS stats: displayed={_streamFrameCount}, skipped={_streamSkipCount}, utilization={utilization:F1}%, last_tick_updated={updatedCount}");
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[StreamPreview] Error: {ex.Message}");
             }
         }
 
@@ -660,8 +616,6 @@ namespace RoboViz
             if (!useCamera && _currentImage == null) return;
 
             BtnAnalyze.IsEnabled = false;
-            // Pause auto-analysis while manual analysis runs
-            _streamTimer?.Stop();
 
             int frameCount = _activeFrameCount;
             var detectors = _cameraSlots.Select(c => c.Detector).Distinct().ToArray();
@@ -717,10 +671,6 @@ namespace RoboViz
 
             StatusText.Text = $"Model: ready  [{_service!.ActiveProvider}]  ({_service.CurrentModel})";
             BtnAnalyze.IsEnabled = true;
-
-            // Resume auto-analysis if still streaming
-            if (_isStreaming)
-                _streamTimer?.Start();
         }
 
         private void UpdateAnalysisResults(InspectionResult[] results, long batchMs)
@@ -814,7 +764,6 @@ namespace RoboViz
         protected override void OnClosed(EventArgs e)
         {
             _triggerService?.Dispose();
-            _streamTimer?.Stop();
             _cameraManager?.Dispose();
             _modbus?.Dispose();
             _service?.Dispose();
