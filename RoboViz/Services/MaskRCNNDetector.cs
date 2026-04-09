@@ -22,8 +22,9 @@ public class MaskRCNNDetector : IDisposable
     private InferenceSession _session = null!;
     private string _inputName = null!;
     private readonly ThreadLocal<float[]> _inputBuffer;
-    private const int InputSize = 720;
-    private const int BufferLength = 1 * 3 * InputSize * InputSize;
+    private const int InputWidth = 512;
+    private const int InputHeight = 384;
+    private const int BufferLength = 1 * 3 * InputHeight * InputWidth;
 
     private static readonly string DiagLogPath = Path.Combine(
         AppDomain.CurrentDomain.BaseDirectory, "gpu_init.log");
@@ -185,7 +186,7 @@ public class MaskRCNNDetector : IDisposable
     private bool RunWarmUp(IProgress<string>? progress)
     {
         var buffer = _inputBuffer.Value!;
-        var tensor = new DenseTensor<float>(buffer, [1, 3, InputSize, InputSize]);
+        var tensor = new DenseTensor<float>(buffer, [1, 3, InputHeight, InputWidth]);
         var inputs = new List<NamedOnnxValue>
         {
             NamedOnnxValue.CreateFromTensor(_inputName, tensor)

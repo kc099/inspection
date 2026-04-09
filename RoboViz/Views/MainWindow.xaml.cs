@@ -99,7 +99,7 @@ namespace RoboViz
                 var loadTask = Task.Run(() =>
                 {
                     string modelPath = Path.Combine(
-                        AppDomain.CurrentDomain.BaseDirectory, "Assets", "maskrcnn_oring.onnx");
+                        AppDomain.CurrentDomain.BaseDirectory, "Assets", "maskrcnn_oring_combined.onnx");
 
                     if (!File.Exists(modelPath))
                         throw new FileNotFoundException("ONNX model not found at: " + modelPath);
@@ -654,9 +654,8 @@ namespace RoboViz
                 Parallel.For(0, frameCount, i =>
                 {
                     string detector = slotConfigs[i].Detector;
-                    results[i] = detector == "MaskRCNN"
-                        ? _service.InspectMaskRCNN(copies[i], slotConfigs[i].TriggerGroup)
-                        : _service.InspectPatchCore(copies[i]);
+                    bool skipGeo = detector != "MaskRCNN";
+                    results[i] = _service.InspectMaskRCNN(copies[i], slotConfigs[i].TriggerGroup, skipGeo);
                 });
                 batchMs = batchSw.ElapsedMilliseconds;
 

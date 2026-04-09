@@ -29,8 +29,6 @@ namespace RoboViz;
 public class InspectionService : IDisposable
 {
     private readonly MaskRCNNDetector _maskrcnn;
-    private readonly PatchCoreDetector _patchcore;
-    private readonly YoloSegDetector _yoloSeg;
     private readonly float _scoreThreshold;
     private Dictionary<string, MetricThreshold> _thresholdsCam3001;
     private Dictionary<string, MetricThreshold> _thresholdsCam3002;
@@ -48,29 +46,9 @@ public class InspectionService : IDisposable
         string modelName = "Model 2")
     {
         _maskrcnn = new MaskRCNNDetector(maskrcnnModelPath, useGpu, progress);
-        _patchcore = new PatchCoreDetector(useGpu);
-        _yoloSeg = new YoloSegDetector();
         _scoreThreshold = scoreThreshold;
         _currentModel = modelName;
         (_thresholdsCam3001, _thresholdsCam3002) = LoadThresholdsForModel(modelName);
-
-        LoadPatchCoreModel(modelName, progress);
-        LoadYoloSegModel(progress);
-    }
-
-    private void LoadYoloSegModel(IProgress<string>? progress)
-    {
-        string assetsDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets");
-        string yoloPath = Path.Combine(assetsDir, "yolo11_seg_oring.onnx");
-
-        if (!File.Exists(yoloPath))
-        {
-            progress?.Report("YOLO segmentation model not found — using legacy PatchCore preprocessing.");
-            MaskRCNNDetector.LogDiag($"[YOLO-Seg] Model not found at: {yoloPath}");
-            return;
-        }
-
-        _yoloSeg.LoadModel(yoloPath, progress);
     }
 
     public void SwitchModel(string modelName, IProgress<string>? progress = null)
@@ -78,39 +56,9 @@ public class InspectionService : IDisposable
         if (_currentModel == modelName) return;
         _currentModel = modelName;
         (_thresholdsCam3001, _thresholdsCam3002) = LoadThresholdsForModel(modelName);
-
-        // Unload previous PatchCore model and load new one to save GPU memory
-        LoadPatchCoreModel(modelName, progress);
     }
 
-    public float PatchCoreThreshold => _patchcore.Threshold;
-
-    private void LoadPatchCoreModel(string modelName, IProgress<string>? progress)
-    {
-        string assetsDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets");
-        string suffix = modelName == "Model 1" ? "model1" : "model2";
-        string onnxPath = Path.Combine(assetsDir, $"patchcore_{suffix}_cropped_resnet50_fp16.onnx");
-
-        if (!File.Exists(onnxPath))
-        {
-            progress?.Report($"PatchCore model not found: {onnxPath}");
-            return;
-        }
-
-        // Load threshold from ablation JSON (falls back to 15.0 if not found)
-        string jsonPath = Path.Combine(assetsDir, $"patchcore_{suffix}_cropped_resnet50_fp16_ablation.json");
-        float threshold = 15.0f;
-        var meta = PatchCoreDetector.LoadMetadata(jsonPath);
-        if (meta != null)
-        {
-            threshold = meta.ComputeThreshold(15.0f);
-            MaskRCNNDetector.LogDiag($"[PatchCore] {modelName} threshold={threshold:F2} " +
-                $"(good_max={meta.good_max_fp16}, defect_min={meta.defect_min_fp16})");
-        }
-        progress?.Report($"PatchCore {modelName} threshold: {threshold:F2}");
-
-        _patchcore.LoadModel(onnxPath, threshold, progress);
-    }
+    public float PatchCoreThreshold => 0f;
 
     private static (Dictionary<string, MetricThreshold> cam3001, Dictionary<string, MetricThreshold> cam3002)
         LoadThresholdsForModel(string modelName)
@@ -180,22 +128,32 @@ public class InspectionService : IDisposable
     }
 
     /// <summary>
-    /// Run Mask R-CNN inspection (CAM 1, 3).
+    /// Run Mask R-CNN inspection on any camera.
     /// triggerGroup selects the per-camera threshold set (1 = coil 3001, 2 = coil 3002).
+    /// skipGeo = true for side-view cameras that lack a visible hole for geometric measurement.
     /// </summary>
-    public InspectionResult InspectMaskRCNN(Bitmap rawImage, int triggerGroup = 1)
+    public InspectionResult InspectMaskRCNN(Bitmap rawImage, int triggerGroup = 1, bool skipGeo = false)
     {
         var totalSw = Stopwatch.StartNew();
-        var thresholds = triggerGroup == 2 ? _thresholdsCam3002 : _thresholdsCam3001;
-        var result = RunGeoEvaluation(rawImage, "MaskRCNN", totalSw, thresholds, out string geoVerdict);
-        if (geoVerdict != "PASS")
-            return result;
+        InspectionResult result;
+
+        if (!skipGeo)
+        {
+            var thresholds = triggerGroup == 2 ? _thresholdsCam3002 : _thresholdsCam3001;
+            result = RunGeoEvaluation(rawImage, "MaskRCNN", totalSw, thresholds, out string geoVerdict);
+            if (geoVerdict != "PASS")
+                return result;
+        }
+        else
+        {
+            result = new InspectionResult { DetectorType = "MaskRCNN" };
+        }
 
         var prepSw = Stopwatch.StartNew();
-        using var img720 = OringMeasurement.BinCrop720(rawImage);
+        using var binned = ResizeTo512x384(rawImage);
         long prepMs = prepSw.ElapsedMilliseconds;
 
-        var detections = _maskrcnn.Detect(img720, _scoreThreshold,
+        var detections = _maskrcnn.Detect(binned, _scoreThreshold,
             out long tensorMs, out long inferenceMs);
 
         result.TensorMs = tensorMs;
@@ -223,63 +181,7 @@ public class InspectionService : IDisposable
             result.FailReasons = [$"Defect detected ({detections.Count}, top: {result.TopScore:P0})"];
 
             var overlaySw = Stopwatch.StartNew();
-            result.OverlayImage = DrawDefectOverlay(img720, detections);
-            result.OverlayMs = overlaySw.ElapsedMilliseconds;
-        }
-        else
-        {
-            result.Verdict = "PASS";
-            result.OverlayImage = rawImage;
-        }
-
-        result.TotalMs = totalSw.ElapsedMilliseconds;
-        return result;
-    }
-
-    /// <summary>
-    /// Run PatchCore inspection (CAM 2, 4).
-    /// No geometric measurement — side-view cameras may not have a visible hole.
-    /// Pipeline: 4×4 bin ? YOLO seg ? crop ? resize 384×384 ? PatchCore inference.
-    /// </summary>
-    public InspectionResult InspectPatchCore(Bitmap rawImage)
-    {
-        var totalSw = Stopwatch.StartNew();
-
-        var result = new InspectionResult
-        {
-            DetectorType = "PatchCore",
-        };
-
-        if (!_patchcore.IsLoaded)
-        {
-            result.Verdict = "ERROR";
-            result.ErrorMessage = "PatchCore model not loaded";
-            result.OverlayImage = rawImage;
-            result.TotalMs = totalSw.ElapsedMilliseconds;
-            return result;
-        }
-
-        // Preprocess: 4x4 bin 512x384, YOLO seg crop, resize 384x384
-        var prepSw = Stopwatch.StartNew();
-        using var patchInput = PreprocessPatchCoreImage(rawImage, out long yoloSegMs);
-        long prepMs = prepSw.ElapsedMilliseconds;
-
-        var pcResult = _patchcore.Detect(patchInput, out long tensorMs, out long inferenceMs);
-
-        result.TensorMs = tensorMs;
-        result.InferenceMs = inferenceMs;
-        result.PrepMs = prepMs;
-        result.AnomalyScore = pcResult.AnomalyScore;
-        result.AnomalyThreshold = _patchcore.Threshold;
-        result.HasDefect = pcResult.IsAnomaly;
-
-        if (pcResult.IsAnomaly)
-        {
-            result.Verdict = "REJECT";
-            result.FailReasons = [$"Anomaly detected (score: {pcResult.AnomalyScore:F2} > {_patchcore.Threshold:F2})"];
-
-            var overlaySw = Stopwatch.StartNew();
-            result.OverlayImage = PatchCoreDetector.DrawHeatmapOverlay(patchInput, pcResult.AnomalyMap);
+            result.OverlayImage = DrawDefectOverlay(binned, detections);
             result.OverlayMs = overlaySw.ElapsedMilliseconds;
         }
         else
@@ -372,49 +274,25 @@ public class InspectionService : IDisposable
     }
 
     /// <summary>
-    /// Preprocess an image for PatchCore inference.
-    /// New pipeline: 4x4 bin 2048x1536 to 512x384, YOLO seg crop, resize 384x384.
-    /// Fallback: BinCrop720, resize 400, center-crop 384x384.
+    /// Resize any input image to exactly 512x384 for the combined MaskRCNN model.
+    /// Uses 4x4 binning when input is 2048x1536; high-quality resize otherwise.
     /// </summary>
-    private Bitmap PreprocessPatchCoreImage(Bitmap rawImage, out long yoloSegMs)
+    private static Bitmap ResizeTo512x384(Bitmap original)
     {
-        yoloSegMs = 0;
+        const int targetW = 512;
+        const int targetH = 384;
 
-        // Step 1: 4x4 binning 2048x1536 to 512x384
-        using var binned = BinTo512x384(rawImage);
+        if (original.Width == 2048 && original.Height == 1536)
+            return BinTo512x384(original);
 
-        if (_yoloSeg.IsLoaded)
+        var result = new Bitmap(targetW, targetH, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+        using (var g = Graphics.FromImage(result))
         {
-            // Step 2: YOLO segmentation on 512x384 directly (model accepts this size)
-            var cropRect = _yoloSeg.Segment(binned, out yoloSegMs);
-
-            Bitmap source;
-            if (cropRect is { Width: > 10, Height: > 10 })
-            {
-                source = binned.Clone(cropRect.Value, binned.PixelFormat);
-            }
-            else
-            {
-                Debug.WriteLine("[PatchCore] YOLO seg returned no crop, using full binned image.");
-                source = new Bitmap(binned);
-            }
-
-            // Step 3: Resize crop to 384x384
-            var result = new Bitmap(384, 384, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
-            using (var g = Graphics.FromImage(result))
-            {
-                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
-                g.DrawImage(source, 0, 0, 384, 384);
-            }
-            source.Dispose();
-            return result;
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            g.DrawImage(original, 0, 0, targetW, targetH);
         }
-
-        // Legacy fallback: BinCrop720, resize 400, center-crop 384
-        Debug.WriteLine("[PatchCore] YOLO seg not loaded, using legacy BinCrop720 preprocessing.");
-        using var img720 = OringMeasurement.BinCrop720(rawImage);
-        return PatchCoreDetector.Preprocess(img720);
+        return result;
     }
 
     /// <summary>
@@ -482,7 +360,5 @@ public class InspectionService : IDisposable
     public void Dispose()
     {
         _maskrcnn?.Dispose();
-        _patchcore?.Dispose();
-        _yoloSeg?.Dispose();
     }
 }
