@@ -6,6 +6,18 @@
   "TriggerCoil_Cam24": 3002,
   "OutputCoilAddress": 3003,
   "CaptureDelayMs": 400,
-  "PollIntervalMs": 200
+  "PollIntervalMs": 200,
+  "OutputCoils": {
+    "Cam1_ReworkCoil": 4001,
+    "Cam1_RejectCoil": 4002,
+    "Cam234_RejectCoil": 4003,
+    "Cam2_ReworkCoil": 4004,
+    "Cam1_ReworkDelayMs": 100,
+    "Cam1_RejectDelayMs": 100,
+    "Cam234_RejectDelayMs": 100,
+    "Cam2_ReworkDelayMs": 100,
+    "CoilOnDurationMs": 200,
+    "ConflictPriority": "reject"
+  }
 }
 	

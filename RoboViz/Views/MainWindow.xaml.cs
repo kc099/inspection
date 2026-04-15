@@ -740,31 +740,138 @@ namespace RoboViz
             }
             CycleTimeText.Text = timing.ToString();
 
-            // Write Modbus coils: CAM1+2 → coil 0, CAM3+4 → coil 1
+            // Write 4-coil rejection output using trigger_config.json addresses + delays
             // Fire-and-forget on background thread — never block the UI
             if (_modbus?.IsConnected == true)
             {
-                bool cam12Pass = results[0].Verdict == "PASS" && results[1].Verdict == "PASS";
-                bool cam34Pass = count > 3
-                    ? results[2].Verdict == "PASS" && results[3].Verdict == "PASS"
-                    : true;
-                ushort coilAddr = ushort.TryParse(TxtCoilAddress.Text.Trim(), out var ca) ? ca : (ushort)0;
-
                 var modbus = _modbus;
-                Task.Run(() => modbus.WriteRejectionCoils(!cam12Pass, !cam34Pass, coilAddr))
-                    .ContinueWith(t => Dispatcher.BeginInvoke(() =>
+                var oc = TriggerConfig.Load().OutputCoils;
+
+                // Build slot→verdict map
+                var verdicts = new Dictionary<int, string>();
+                for (int i = 0; i < count; i++)
+                    verdicts[i] = results[i].Verdict;
+
+                Task.Run(() =>
+                {
+                    var activated = new List<string>();
+                    bool allOk = true;
+                    string? lastError = null;
+
+                    // Sensor 3001 logic: CAM 1 (slot 0)
+                    verdicts.TryGetValue(0, out string? cam1V);
+                    if (cam1V == "REWORK")
                     {
-                        if (t.Result)
+                        if (ActivateManualCoil(modbus, oc.Cam1_ReworkCoil, oc.Cam1_ReworkDelayMs, oc.CoilOnDurationMs, out string? err))
+                            activated.Add($"Cam1_Rework@{oc.Cam1_ReworkCoil}");
+                        else { allOk = false; lastError = err; }
+                    }
+                    else if (cam1V == "REJECT")
+                    {
+                        if (ActivateManualCoil(modbus, oc.Cam1_RejectCoil, oc.Cam1_RejectDelayMs, oc.CoilOnDurationMs, out string? err))
+                            activated.Add($"Cam1_Reject@{oc.Cam1_RejectCoil}");
+                        else { allOk = false; lastError = err; }
+                    }
+
+                    // Sensor 3002 logic: CAM 2 (slot 1, top), CAM 3 (slot 2, side), CAM 4 (slot 3, side)
+                    verdicts.TryGetValue(1, out string? cam2V);
+                    verdicts.TryGetValue(2, out string? cam3V);
+                    verdicts.TryGetValue(3, out string? cam4V);
+
+                    bool anyReject = cam2V == "REJECT" || cam3V == "REJECT" || cam4V == "REJECT";
+                    bool cam2Rework = cam2V == "REWORK";
+                    bool rejectPriority = !string.Equals(oc.ConflictPriority, "rework", StringComparison.OrdinalIgnoreCase);
+
+                    if (rejectPriority)
+                    {
+                        if (anyReject)
                         {
-                            ModbusStatusText.Text = $"Sent: C0={(!cam12Pass ? 1 : 0)} C1={(!cam34Pass ? 1 : 0)}";
+                            if (ActivateManualCoil(modbus, oc.Cam234_RejectCoil, oc.Cam234_RejectDelayMs, oc.CoilOnDurationMs, out string? err))
+                                activated.Add($"Cam234_Reject@{oc.Cam234_RejectCoil}");
+                            else { allOk = false; lastError = err; }
+                        }
+                        else if (cam2Rework)
+                        {
+                            if (ActivateManualCoil(modbus, oc.Cam2_ReworkCoil, oc.Cam2_ReworkDelayMs, oc.CoilOnDurationMs, out string? err))
+                                activated.Add($"Cam2_Rework@{oc.Cam2_ReworkCoil}");
+                            else { allOk = false; lastError = err; }
+                        }
+                    }
+                    else
+                    {
+                        if (anyReject)
+                        {
+                            if (ActivateManualCoil(modbus, oc.Cam234_RejectCoil, oc.Cam234_RejectDelayMs, oc.CoilOnDurationMs, out string? err))
+                                activated.Add($"Cam234_Reject@{oc.Cam234_RejectCoil}");
+                            else { allOk = false; lastError = err; }
+                        }
+                        if (cam2Rework)
+                        {
+                            if (ActivateManualCoil(modbus, oc.Cam2_ReworkCoil, oc.Cam2_ReworkDelayMs, oc.CoilOnDurationMs, out string? err))
+                                activated.Add($"Cam2_Rework@{oc.Cam2_ReworkCoil}");
+                            else { allOk = false; lastError = err; }
+                        }
+                    }
+
+                    string summary = activated.Count > 0 ? string.Join(", ", activated) : "no coil needed";
+                    Dispatcher.BeginInvoke(() =>
+                    {
+                        if (activated.Count > 0 && allOk)
+                        {
+                            ModbusStatusText.Text = $"Sent: {summary}";
                             ModbusStatusText.Foreground = ReadyGreen;
+                        }
+                        else if (activated.Count > 0)
+                        {
+                            ModbusStatusText.Text = $"Partial: {summary} | err: {lastError}";
+                            ModbusStatusText.Foreground = ErrorRed;
                         }
                         else
                         {
-                            ModbusStatusText.Text = $"Write error: {modbus.LastError}";
-                            ModbusStatusText.Foreground = ErrorRed;
+                            ModbusStatusText.Text = $"All PASS — {summary}";
+                            ModbusStatusText.Foreground = ReadyGreen;
                         }
-                    }), TaskContinuationOptions.OnlyOnRanToCompletion);
+                    });
+                });
+            }
+        }
+
+        /// <summary>
+        /// Activate a single coil for manual Analyze testing: delay → ON → duration → OFF.
+        /// Runs on a background thread (called inside Task.Run).
+        /// </summary>
+        private static bool ActivateManualCoil(ModbusService modbus, ushort coilAddress, int delayMs, int durationMs, out string? error)
+        {
+            try
+            {
+                if (delayMs > 0)
+                    Thread.Sleep(delayMs);
+
+                if (!modbus.WriteSingleCoil(coilAddress, true))
+                {
+                    error = $"Write ON failed @{coilAddress}: {modbus.LastError}";
+                    return false;
+                }
+
+                Debug.WriteLine($"[Analyze] Coil {coilAddress} ON (delay={delayMs}ms)");
+
+                if (durationMs > 0)
+                    Thread.Sleep(durationMs);
+
+                if (!modbus.WriteSingleCoil(coilAddress, false))
+                {
+                    error = $"Write OFF failed @{coilAddress}: {modbus.LastError}";
+                    return false;
+                }
+
+                Debug.WriteLine($"[Analyze] Coil {coilAddress} OFF (held {durationMs}ms)");
+                error = null;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = $"Coil {coilAddress} exception: {ex.Message}";
+                return false;
             }
         }
 
@@ -813,6 +920,7 @@ namespace RoboViz
             {
                 ModbusStatusText.Text = $"Connected: {comPort} @ {baudRate}";
                 ModbusStatusText.Foreground = ReadyGreen;
+                ModbusConnectionDot.Fill = PassGreen;
                 BtnModbusConnect.IsEnabled = false;
                 BtnModbusDisconnect.IsEnabled = true;
             }
@@ -820,6 +928,7 @@ namespace RoboViz
             {
                 ModbusStatusText.Text = $"Failed: {_modbus.LastError}";
                 ModbusStatusText.Foreground = ErrorRed;
+                ModbusConnectionDot.Fill = FailRed;
             }
         }
 
@@ -828,6 +937,7 @@ namespace RoboViz
             _modbus?.Disconnect();
             ModbusStatusText.Text = "Disconnected";
             ModbusStatusText.Foreground = DimGray;
+            ModbusConnectionDot.Fill = DimGray;
             BtnModbusConnect.IsEnabled = true;
             BtnModbusDisconnect.IsEnabled = false;
         }
@@ -906,7 +1016,9 @@ namespace RoboViz
             if (evt.Results.Length > 0)
                 PopulateMetricsTable(evt.Results[0].MetricResults);
 
-            string modbusInfo = evt.ModbusWriteOk ? "coil written" : (evt.ModbusError ?? "no write");
+            string modbusInfo = evt.ModbusWriteOk
+                ? $"coils: {evt.CoilsActivated}"
+                : (evt.CoilsActivated != null ? $"coil error: {evt.ModbusError}" : (evt.ModbusError ?? "no coil needed"));
             string verdicts = string.Join("/", evt.Results.Select(r => r.Verdict));
             TriggerStatusText.Text =
                 $"{pair}: {verdicts} | {evt.BatchMs}ms | {modbusInfo}";

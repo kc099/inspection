@@ -19,6 +19,11 @@ public class TriggerConfig
     public int PollIntervalMs { get; set; } = 200;
 
     /// <summary>
+    /// Rejection output coil configuration (addresses, delays, conflict priority).
+    /// </summary>
+    public OutputCoilConfig OutputCoils { get; set; } = new();
+
+    /// <summary>
     /// Per-camera slot configuration. Default: 3 cameras on Trigger 1, 1 on Trigger 2.
     /// </summary>
     public CameraSlotConfig[] CameraSlots { get; set; } =
@@ -66,6 +71,39 @@ public class TriggerConfig
 }
 
 /// <summary>
+/// Output coil addresses, delays, and conflict priority for conveyor rejection.
+/// </summary>
+public class OutputCoilConfig
+{
+    /// <summary>Coil address: CAM 1 rework (sensor 3001).</summary>
+    public ushort Cam1_ReworkCoil { get; set; } = 3010;
+    /// <summary>Coil address: CAM 1 reject (sensor 3001).</summary>
+    public ushort Cam1_RejectCoil { get; set; } = 3011;
+    /// <summary>Coil address: CAM 2/3/4 reject (sensor 3002).</summary>
+    public ushort Cam234_RejectCoil { get; set; } = 3012;
+    /// <summary>Coil address: CAM 2 rework (sensor 3002).</summary>
+    public ushort Cam2_ReworkCoil { get; set; } = 3013;
+
+    /// <summary>Delay (ms) before activating CAM 1 rework coil after verdict.</summary>
+    public int Cam1_ReworkDelayMs { get; set; } = 500;
+    /// <summary>Delay (ms) before activating CAM 1 reject coil after verdict.</summary>
+    public int Cam1_RejectDelayMs { get; set; } = 500;
+    /// <summary>Delay (ms) before activating CAM 2/3/4 reject coil after verdict.</summary>
+    public int Cam234_RejectDelayMs { get; set; } = 500;
+    /// <summary>Delay (ms) before activating CAM 2 rework coil after verdict.</summary>
+    public int Cam2_ReworkDelayMs { get; set; } = 500;
+
+    /// <summary>How long (ms) the coil stays ON before being turned OFF.</summary>
+    public int CoilOnDurationMs { get; set; } = 200;
+
+    /// <summary>
+    /// Conflict resolution when CAM 2 gives REWORK but CAM 3/4 gives REJECT.
+    /// "reject" (default): only reject coil fires. "rework": both fire.
+    /// </summary>
+    public string ConflictPriority { get; set; } = "reject";
+}
+
+/// <summary>
 /// Which trigger group fired.
 /// </summary>
 public enum TriggerType { Trigger1, Trigger2 }
@@ -103,4 +141,6 @@ public class TriggerResultEvent
     public required long BatchMs { get; init; }
     public bool ModbusWriteOk { get; init; }
     public string? ModbusError { get; init; }
+    /// <summary>Which output coils were activated (e.g. "Cam1_Rework@3010").</summary>
+    public string? CoilsActivated { get; init; }
 }

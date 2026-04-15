@@ -388,9 +388,8 @@ public class TriggerService : IDisposable
                 frameList[i].Dispose();
         }
 
-        // Write output coils — DISABLED for now (read-only trigger mode)
-        bool modbusOk = false;
-        string? modbusError = "write disabled";
+        // Write rejection output coils based on verdicts
+        var (modbusOk, modbusError, coilsActivated) = WriteRejectionCoils(triggerGroup, results, slotList);
 
         _onResult(new TriggerResultEvent
         {
@@ -400,7 +399,139 @@ public class TriggerService : IDisposable
             BatchMs = batchMs,
             ModbusWriteOk = modbusOk,
             ModbusError = modbusError,
+            CoilsActivated = coilsActivated,
         });
+    }
+
+    /// <summary>
+    /// Evaluate verdicts and write the appropriate rejection/rework coils.
+    /// Each coil is turned ON after its configured delay, held for CoilOnDurationMs, then turned OFF.
+    /// </summary>
+    private (bool ok, string? error, string? coilsActivated) WriteRejectionCoils(
+        int triggerGroup, InspectionResult[] results, System.Collections.Generic.List<int> slotList)
+    {
+        var oc = _config.OutputCoils;
+        var activated = new System.Collections.Generic.List<string>();
+        bool allOk = true;
+        string? lastError = null;
+
+        // Build slot?verdict map
+        var verdictBySlot = new System.Collections.Generic.Dictionary<int, string>();
+        for (int i = 0; i < results.Length && i < slotList.Count; i++)
+            verdictBySlot[slotList[i]] = results[i].Verdict;
+
+        if (triggerGroup == 1)
+        {
+            // Sensor 3001: CAM 1 (slot 0)
+            verdictBySlot.TryGetValue(0, out string? cam1Verdict);
+
+            if (cam1Verdict == "REWORK")
+            {
+                if (ActivateCoil(oc.Cam1_ReworkCoil, oc.Cam1_ReworkDelayMs, oc.CoilOnDurationMs, out string? err))
+                    activated.Add($"Cam1_Rework@{oc.Cam1_ReworkCoil}");
+                else { allOk = false; lastError = err; }
+            }
+            else if (cam1Verdict == "REJECT")
+            {
+                if (ActivateCoil(oc.Cam1_RejectCoil, oc.Cam1_RejectDelayMs, oc.CoilOnDurationMs, out string? err))
+                    activated.Add($"Cam1_Reject@{oc.Cam1_RejectCoil}");
+                else { allOk = false; lastError = err; }
+            }
+        }
+        else if (triggerGroup == 2)
+        {
+            // Sensor 3002: CAM 2 (slot 1, top), CAM 3 (slot 2, side), CAM 4 (slot 3, side)
+            verdictBySlot.TryGetValue(1, out string? cam2Verdict);
+            verdictBySlot.TryGetValue(2, out string? cam3Verdict);
+            verdictBySlot.TryGetValue(3, out string? cam4Verdict);
+
+            bool anyReject = cam2Verdict == "REJECT" || cam3Verdict == "REJECT" || cam4Verdict == "REJECT";
+            bool cam2Rework = cam2Verdict == "REWORK";
+
+            bool rejectPriority = !string.Equals(oc.ConflictPriority, "rework", StringComparison.OrdinalIgnoreCase);
+
+            if (rejectPriority)
+            {
+                // "reject" priority: if any reject, fire reject coil only; rework only if no reject
+                if (anyReject)
+                {
+                    if (ActivateCoil(oc.Cam234_RejectCoil, oc.Cam234_RejectDelayMs, oc.CoilOnDurationMs, out string? err))
+                        activated.Add($"Cam234_Reject@{oc.Cam234_RejectCoil}");
+                    else { allOk = false; lastError = err; }
+                }
+                else if (cam2Rework)
+                {
+                    if (ActivateCoil(oc.Cam2_ReworkCoil, oc.Cam2_ReworkDelayMs, oc.CoilOnDurationMs, out string? err))
+                        activated.Add($"Cam2_Rework@{oc.Cam2_ReworkCoil}");
+                    else { allOk = false; lastError = err; }
+                }
+            }
+            else
+            {
+                // "rework" priority: both can fire
+                if (anyReject)
+                {
+                    if (ActivateCoil(oc.Cam234_RejectCoil, oc.Cam234_RejectDelayMs, oc.CoilOnDurationMs, out string? err))
+                        activated.Add($"Cam234_Reject@{oc.Cam234_RejectCoil}");
+                    else { allOk = false; lastError = err; }
+                }
+                if (cam2Rework)
+                {
+                    if (ActivateCoil(oc.Cam2_ReworkCoil, oc.Cam2_ReworkDelayMs, oc.CoilOnDurationMs, out string? err))
+                        activated.Add($"Cam2_Rework@{oc.Cam2_ReworkCoil}");
+                    else { allOk = false; lastError = err; }
+                }
+            }
+        }
+
+        string? coilsSummary = activated.Count > 0 ? string.Join(", ", activated) : null;
+        bool ok = activated.Count > 0 ? allOk : false;
+        string? error = activated.Count == 0 ? "no coil needed" : lastError;
+
+        Debug.WriteLine($"[Trigger] Coils: group={triggerGroup}, activated=[{coilsSummary ?? "none"}], ok={ok}, err={error}");
+        return (ok, error, coilsSummary);
+    }
+
+    /// <summary>
+    /// Activate a single coil: wait delay ? turn ON ? wait duration ? turn OFF.
+    /// Runs on the consumer thread (blocking is acceptable here).
+    /// </summary>
+    private bool ActivateCoil(ushort coilAddress, int delayMs, int durationMs, out string? error)
+    {
+        try
+        {
+            if (delayMs > 0)
+                Thread.Sleep(delayMs);
+
+            if (!_modbus.WriteSingleCoil(coilAddress, true))
+            {
+                error = $"Write ON failed @{coilAddress}: {_modbus.LastError}";
+                Debug.WriteLine($"[Trigger] {error}");
+                return false;
+            }
+
+            Debug.WriteLine($"[Trigger] Coil {coilAddress} ON (delay={delayMs}ms)");
+
+            if (durationMs > 0)
+                Thread.Sleep(durationMs);
+
+            if (!_modbus.WriteSingleCoil(coilAddress, false))
+            {
+                error = $"Write OFF failed @{coilAddress}: {_modbus.LastError}";
+                Debug.WriteLine($"[Trigger] {error}");
+                return false;
+            }
+
+            Debug.WriteLine($"[Trigger] Coil {coilAddress} OFF (held {durationMs}ms)");
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = $"Coil {coilAddress} exception: {ex.Message}";
+            Debug.WriteLine($"[Trigger] {error}");
+            return false;
+        }
     }
 
     public void Dispose()
