@@ -82,10 +82,12 @@ public class InspectionService : IDisposable
     private InspectionResult RunGeoEvaluation(
         Bitmap rawImage, string detectorType, Stopwatch totalSw,
         Dictionary<string, MetricThreshold> thresholds,
-        out string geoVerdict)
+        out string geoVerdict, int slot = 0)
     {
         var geoSw = Stopwatch.StartNew();
-        var geoResult = OringMeasurement.Measure(rawImage);
+        var geoResult = slot == 1
+            ? OringMeasurement.MeasureCam2(rawImage)
+            : OringMeasurement.Measure(rawImage);
         long geoMs = geoSw.ElapsedMilliseconds;
 
         if (geoResult == null)
@@ -120,7 +122,9 @@ public class InspectionService : IDisposable
         {
             result.Verdict = geoVerdict;
             result.FailReasons = failReasons;
-            result.OverlayImage = OringMeasurement.DrawGeometricOverlay(rawImage, geoResult);
+            result.OverlayImage = slot == 1
+                ? OringMeasurement.DrawContourOverlayCam2(rawImage, geoResult)
+                : OringMeasurement.DrawGeometricOverlay(rawImage, geoResult);
             result.TotalMs = totalSw.ElapsedMilliseconds;
         }
 
@@ -131,8 +135,9 @@ public class InspectionService : IDisposable
     /// Run Mask R-CNN inspection on any camera.
     /// triggerGroup selects the per-camera threshold set (1 = coil 3001, 2 = coil 3002).
     /// skipGeo = true for side-view cameras that lack a visible hole for geometric measurement.
+    /// slot identifies the display slot (0 = cam1, 1 = cam2) to select the geo method.
     /// </summary>
-    public InspectionResult InspectMaskRCNN(Bitmap rawImage, int triggerGroup = 1, bool skipGeo = false)
+    public InspectionResult InspectMaskRCNN(Bitmap rawImage, int triggerGroup = 1, bool skipGeo = false, int slot = 0)
     {
         var totalSw = Stopwatch.StartNew();
         InspectionResult result;
@@ -140,7 +145,7 @@ public class InspectionService : IDisposable
         if (!skipGeo)
         {
             var thresholds = triggerGroup == 2 ? _thresholdsCam3002 : _thresholdsCam3001;
-            result = RunGeoEvaluation(rawImage, "MaskRCNN", totalSw, thresholds, out string geoVerdict);
+            result = RunGeoEvaluation(rawImage, "MaskRCNN", totalSw, thresholds, out string geoVerdict, slot);
             if (geoVerdict != "PASS")
                 return result;
         }

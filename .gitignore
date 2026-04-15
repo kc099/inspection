@@ -4,3 +4,4 @@ RoboViz/referencefiles/
 RoboViz/Assets/*.onnx
 .vs/
 RoboViz/MvCameraControlNet_V2
+RoboViz/Assets/background.bmp

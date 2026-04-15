@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Drawing;
+using OpenCvSharp;
 
 namespace RoboViz;
 
@@ -16,6 +17,12 @@ public class GeometricResult
     public double CircularityInner { get; set; }
     public PointF OuterCenter { get; set; }
     public PointF InnerCenter { get; set; }
+
+    /// <summary>Raw outer contour points (cam2 only, null for cam1).</summary>
+    public OpenCvSharp.Point[]? OuterContour { get; set; }
+
+    /// <summary>Raw inner (hole) contour points (cam2 only, null for cam1).</summary>
+    public OpenCvSharp.Point[]? InnerContour { get; set; }
 
     public Dictionary<string, double> ToDictionary() => new()
     {

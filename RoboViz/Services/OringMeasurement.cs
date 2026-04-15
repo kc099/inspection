@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.IO;
 using System.Runtime.InteropServices;
 using OpenCvSharp;
 
@@ -16,6 +17,10 @@ public static class OringMeasurement
 {
     public const int DefaultBgValue = 24;
     private const int DefaultThreshold = 30;
+
+    // Cam2 background image cache (loaded once, reused every call)
+    private static Mat? _cam2BgGray;
+    private static readonly object _cam2BgLock = new();
 
     static OringMeasurement()
     {
@@ -169,6 +174,138 @@ public static class OringMeasurement
         return MatToBitmap(vis);
     }
 
+    // ?????????????????????????????????????????????????????????????
+    //  Cam2 — washer_inspector.py methodology
+    // ?????????????????????????????????????????????????????????????
+
+    /// <summary>
+    /// Load and cache the cam2 background image used for ratio normalization.
+    /// Call once at startup (e.g. from InspectionService constructor).
+    /// </summary>
+    public static void LoadCam2Background(string bmpPath)
+    {
+        lock (_cam2BgLock)
+        {
+            _cam2BgGray?.Dispose();
+            var bgBgr = Cv2.ImRead(bmpPath, ImreadModes.Grayscale);
+            if (bgBgr.Empty())
+                throw new FileNotFoundException($"Cam2 background image not found: {bmpPath}");
+            _cam2BgGray = bgBgr;
+            Debug.WriteLine($"[Cam2] Background loaded: {bmpPath} ({bgBgr.Width}x{bgBgr.Height})");
+        }
+    }
+
+    /// <summary>
+    /// Measure an o-ring from a cam2 raw image using the washer_inspector.py
+    /// ratio-normalization + adaptive-threshold pipeline.
+    /// Returns null if contours cannot be found.
+    /// The returned GeometricResult includes OuterContour / InnerContour for overlay.
+    /// </summary>
+    public static GeometricResult? MeasureCam2(Bitmap image)
+    {
+        using var src = BitmapToMat(image);
+        using var gray = new Mat();
+        Cv2.CvtColor(src, gray, ColorConversionCodes.BGR2GRAY);
+
+        using var mask = BuildMaskCam2(gray);
+        if (mask == null)
+        {
+            Debug.WriteLine($"[MeasureCam2] FAIL: BuildMaskCam2 returned null (no background loaded?).");
+            return null;
+        }
+
+        // FindContours with RETR_CCOMP — same as cam1, gives outer + inner hierarchy
+        Cv2.FindContours(mask, out OpenCvSharp.Point[][] contours, out HierarchyIndex[] hierarchy,
+            RetrievalModes.CComp, ContourApproximationModes.ApproxNone);
+
+        if (contours.Length == 0 || hierarchy.Length == 0)
+        {
+            Debug.WriteLine($"[MeasureCam2] FAIL: no contours found. Image={image.Width}x{image.Height}, fgPixels={Cv2.CountNonZero(mask)}");
+            return null;
+        }
+
+        // Outer = largest contour by area (identical to cam1)
+        int outerIdx = -1;
+        double maxArea = 0;
+        for (int i = 0; i < contours.Length; i++)
+        {
+            double a = Cv2.ContourArea(contours[i]);
+            if (a > maxArea) { maxArea = a; outerIdx = i; }
+        }
+        if (outerIdx < 0) return null;
+        var outer = contours[outerIdx];
+
+        // Inner = largest child of outer (identical to cam1)
+        OpenCvSharp.Point[]? inner = null;
+        double bestInnerArea = 0;
+        for (int i = 0; i < contours.Length; i++)
+        {
+            if (hierarchy[i].Parent == outerIdx)
+            {
+                double a = Cv2.ContourArea(contours[i]);
+                if (a > bestInnerArea) { bestInnerArea = a; inner = contours[i]; }
+            }
+        }
+        if (inner == null)
+        {
+            Debug.WriteLine($"[MeasureCam2] FAIL: no inner contour (hole) found. contours={contours.Length}, outerArea={maxArea:F0}");
+            return null;
+        }
+
+        // Fit circles via least squares (identical to cam1)
+        var (ox, oy, orad) = FitCircleLsq(outer);
+        var (ix, iy, irad) = FitCircleLsq(inner);
+        double cdist = Math.Sqrt((ox - ix) * (ox - ix) + (oy - iy) * (oy - iy));
+        double mrad = (orad + irad) / 2.0;
+
+        // Circularity (identical to cam1)
+        double oArea = Cv2.ContourArea(outer);
+        double oPeri = Cv2.ArcLength(outer, true);
+        double circOuter = oPeri > 0 ? (4.0 * Math.PI * oArea / (oPeri * oPeri)) : 0;
+
+        double iArea = Cv2.ContourArea(inner);
+        double iPeri = Cv2.ArcLength(inner, true);
+        double circInner = iPeri > 0 ? (4.0 * Math.PI * iArea / (iPeri * iPeri)) : 0;
+
+        return new GeometricResult
+        {
+            OuterRadius = orad,
+            InnerRadius = irad,
+            CenterDist = cdist,
+            EccentricityPct = mrad > 0 ? (cdist / mrad * 100.0) : 0.0,
+            CircularityOuter = circOuter,
+            CircularityInner = circInner,
+            OuterCenter = new PointF((float)ox, (float)oy),
+            InnerCenter = new PointF((float)ix, (float)iy),
+            OuterContour = outer,
+            InnerContour = inner,
+        };
+    }
+
+    /// <summary>
+    /// Draw contour-based overlay for cam2 (actual contour outlines + centers + connection line).
+    /// </summary>
+    public static Bitmap DrawContourOverlayCam2(Bitmap image, GeometricResult result)
+    {
+        using var vis = BitmapToMat(image);
+
+        // Draw actual contour outlines
+        if (result.OuterContour != null)
+            Cv2.DrawContours(vis, [result.OuterContour], -1, new Scalar(0, 255, 0), 2, LineTypes.AntiAlias);
+        if (result.InnerContour != null)
+            Cv2.DrawContours(vis, [result.InnerContour], -1, new Scalar(0, 0, 255), 2, LineTypes.AntiAlias);
+
+        // Center dots + connection line (same as cam1 style)
+        var oc = new OpenCvSharp.Point((int)result.OuterCenter.X, (int)result.OuterCenter.Y);
+        var ic = new OpenCvSharp.Point((int)result.InnerCenter.X, (int)result.InnerCenter.Y);
+
+        Cv2.Circle(vis, oc, 8, new Scalar(0, 255, 0), -1);
+        Cv2.Circle(vis, ic, 8, new Scalar(0, 0, 255), -1);
+        Cv2.Line(vis, oc, ic, new Scalar(0, 255, 255), 2);
+
+        return MatToBitmap(vis);
+    }
+
     #region Helpers
 
     /// <summary>
@@ -212,6 +349,164 @@ public static class OringMeasurement
         }
 
         return binary;
+    }
+
+    /// <summary>
+    /// Build binary mask for cam2 — port of washer_inspector.py process_image() steps 1-6a.
+    /// Uses ratio normalization against a background image + adaptive threshold.
+    /// Returns a ring-shaped mask (central hole preserved) or null if no background loaded.
+    /// </summary>
+    private static Mat? BuildMaskCam2(Mat gray)
+    {
+        Mat? bg;
+        lock (_cam2BgLock) { bg = _cam2BgGray; }
+        if (bg == null)
+        {
+            Debug.WriteLine("[BuildMaskCam2] No background image loaded. Call LoadCam2Background() first.");
+            return null;
+        }
+
+        // Resize background to match image if dimensions differ
+        Mat bgResized;
+        if (bg.Width != gray.Width || bg.Height != gray.Height)
+        {
+            bgResized = new Mat();
+            Cv2.Resize(bg, bgResized, new OpenCvSharp.Size(gray.Width, gray.Height), interpolation: InterpolationFlags.Linear);
+        }
+        else
+        {
+            bgResized = bg;
+        }
+
+        try
+        {
+            // Step 1: Ratio normalization — bg pixels ? ~128, component deviates
+            using var bgF = new Mat();
+            bgResized.ConvertTo(bgF, MatType.CV_32F);
+            Cv2.Max(bgF, new Scalar(5.0), bgF);
+
+            using var imgF = new Mat();
+            gray.ConvertTo(imgF, MatType.CV_32F);
+
+            using var normalized32 = new Mat();
+            Cv2.Divide(imgF, bgF, normalized32);
+            Cv2.Multiply(normalized32, new Scalar(128.0), normalized32);
+            Cv2.Min(normalized32, new Scalar(255), normalized32);
+            Cv2.Max(normalized32, new Scalar(0), normalized32);
+
+            using var normalized = new Mat();
+            normalized32.ConvertTo(normalized, MatType.CV_8U);
+
+            // Step 2: Deviation map |normalized - 128| + GaussianBlur
+            using var mid = new Mat(normalized.Size(), MatType.CV_8U, new Scalar(128));
+            using var dev = new Mat();
+            Cv2.Absdiff(normalized, mid, dev);
+
+            using var devBlur = new Mat();
+            Cv2.GaussianBlur(dev, devBlur, new OpenCvSharp.Size(21, 21), 4);
+
+            // Step 3: Adaptive threshold
+            using var adaptive = new Mat();
+            Cv2.AdaptiveThreshold(devBlur, adaptive, 255,
+                AdaptiveThresholdTypes.GaussianC,
+                ThresholdTypes.Binary,
+                blockSize: 151, c: -5);
+
+            // Step 4: Morphological cleanup
+            using var kClose = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(35, 35));
+            using var kOpen = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(15, 15));
+            var mask = new Mat();
+            Cv2.MorphologyEx(adaptive, mask, MorphTypes.Close, kClose, iterations: 3);
+            Cv2.MorphologyEx(mask, mask, MorphTypes.Open, kOpen, iterations: 1);
+
+            // Step 5: Pick the most circular connected component (score = circularity × area)
+            using var labels = new Mat();
+            using var stats = new Mat();
+            using var centroids = new Mat();
+            int nLabels = Cv2.ConnectedComponentsWithStats(mask, labels, stats, centroids, PixelConnectivity.Connectivity8);
+
+            int bestId = -1;
+            double bestScore = -1.0;
+            for (int lbl = 1; lbl < nLabels; lbl++)
+            {
+                int area = stats.At<int>(lbl, 4);
+                if (area < 500) continue;
+
+                using var blob = new Mat();
+                using var lblScalar = new Mat(labels.Size(), labels.Type(), new Scalar(lbl));
+                Cv2.Compare(labels, lblScalar, blob, CmpType.EQ);
+
+                Cv2.FindContours(blob, out OpenCvSharp.Point[][] cnts, out _,
+                    RetrievalModes.External, ContourApproximationModes.ApproxNone);
+                if (cnts.Length == 0) continue;
+
+                double perim = Cv2.ArcLength(cnts[0], true);
+                if (perim == 0) continue;
+
+                double circ = 4.0 * Math.PI * area / (perim * perim);
+                double score = circ * area;
+                if (score > bestScore) { bestScore = score; bestId = lbl; }
+            }
+
+            Mat compMask;
+            if (bestId >= 1)
+            {
+                compMask = new Mat();
+                using var bestScalar = new Mat(labels.Size(), labels.Type(), new Scalar(bestId));
+                Cv2.Compare(labels, bestScalar, compMask, CmpType.EQ);
+            }
+            else if (nLabels > 1)
+            {
+                // Fallback: largest component
+                int fallbackLabel = 1;
+                int fallbackArea = 0;
+                for (int i = 1; i < nLabels; i++)
+                {
+                    int a = stats.At<int>(i, 4);
+                    if (a > fallbackArea) { fallbackArea = a; fallbackLabel = i; }
+                }
+                compMask = new Mat();
+                using var fbScalar = new Mat(labels.Size(), labels.Type(), new Scalar(fallbackLabel));
+                Cv2.Compare(labels, fbScalar, compMask, CmpType.EQ);
+            }
+            else
+            {
+                compMask = mask.Clone();
+            }
+
+            // Step 6a: Fill small internal holes (<20% of component area), keep central hole
+            int compArea = Cv2.CountNonZero(compMask);
+            using var flooded = compMask.Clone();
+            Cv2.FloodFill(flooded, new OpenCvSharp.Point(0, 0), new Scalar(255));
+            using var allHoles = new Mat();
+            Cv2.BitwiseNot(flooded, allHoles);
+
+            using var hLabels = new Mat();
+            using var hStats = new Mat();
+            using var hCentroids = new Mat();
+            int nh = Cv2.ConnectedComponentsWithStats(allHoles, hLabels, hStats, hCentroids, PixelConnectivity.Connectivity8);
+
+            for (int hlbl = 1; hlbl < nh; hlbl++)
+            {
+                int holeArea = hStats.At<int>(hlbl, 4);
+                if (holeArea < compArea * 0.20)
+                {
+                    // Small hole ? fill it in the component mask
+                    using var holeMask = new Mat();
+                    using var hScalar = new Mat(hLabels.Size(), hLabels.Type(), new Scalar(hlbl));
+                    Cv2.Compare(hLabels, hScalar, holeMask, CmpType.EQ);
+                    compMask.SetTo(new Scalar(255), holeMask);
+                }
+            }
+
+            mask.Dispose();
+            return compMask;
+        }
+        finally
+        {
+            if (!ReferenceEquals(bgResized, bg))
+                bgResized.Dispose();
+        }
     }
 
     /// <summary>

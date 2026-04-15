@@ -106,6 +106,14 @@ namespace RoboViz
 
                     _service = new InspectionService(modelPath, scoreThreshold: 0.5f,
                         useGpu: true, progress: progress, modelName: "Model 2");
+
+                    // Load cam2 background image for ratio-normalization pipeline
+                    string cam2BgPath = Path.Combine(
+                        AppDomain.CurrentDomain.BaseDirectory, "Assets", "background.bmp");
+                    if (File.Exists(cam2BgPath))
+                        OringMeasurement.LoadCam2Background(cam2BgPath);
+                    else
+                        System.Diagnostics.Debug.WriteLine($"[Init] Cam2 background not found: {cam2BgPath}");
                 });
 
                 // Wait with extended timeout for PCIe Gen2 + older CPU
@@ -655,7 +663,7 @@ namespace RoboViz
                 {
                     string detector = slotConfigs[i].Detector;
                     bool skipGeo = detector != "MaskRCNN";
-                    results[i] = _service.InspectMaskRCNN(copies[i], slotConfigs[i].TriggerGroup, skipGeo);
+                    results[i] = _service.InspectMaskRCNN(copies[i], slotConfigs[i].TriggerGroup, skipGeo, slot: i);
                 });
                 batchMs = batchSw.ElapsedMilliseconds;
 
