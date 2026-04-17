@@ -28,6 +28,12 @@ public class CameraSlotConfig
     /// </summary>
     public int CaptureDelayMs { get; set; } = 50;
 
+    /// <summary>
+    /// Hardware trigger source line on the camera (e.g. "Line0", "Line1").
+    /// Used only when CameraTriggerMode is "hardware".
+    /// </summary>
+    public string TriggerSource { get; set; } = "Line0";
+
     private static readonly string DefaultPath =
         Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets", "camera_slots.json");
 

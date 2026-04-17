@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
@@ -23,12 +24,14 @@ public class CameraManager : IDisposable
 
     public int CameraCount => CameraIndices.Length;
     public bool IsStreaming { get; private set; }
+    public bool IsHardwareTrigger { get; private set; }
 
     private readonly List<IDeviceInfo> _deviceInfoList = [];
     private readonly IDevice?[] _devices;
     private readonly Bitmap?[] _latestFrames;
     private readonly long[] _frameSequence; // Increments on every new frame
     private readonly object[] _frameLocks;
+    private readonly ManualResetEventSlim[] _frameArrived; // Signaled when a new frame arrives
     private readonly Thread?[] _grabThreads;
     private readonly bool[] _grabbing;
     private bool _sdkInitialized;
@@ -40,10 +43,14 @@ public class CameraManager : IDisposable
         _latestFrames = new Bitmap?[count];
         _frameSequence = new long[count];
         _frameLocks = new object[count];
+        _frameArrived = new ManualResetEventSlim[count];
         _grabThreads = new Thread?[count];
         _grabbing = new bool[count];
         for (int i = 0; i < count; i++)
+        {
             _frameLocks[i] = new object();
+            _frameArrived[i] = new ManualResetEventSlim(false);
+        }
     }
 
     /// <summary>
@@ -167,6 +174,109 @@ public class CameraManager : IDisposable
     }
 
     /// <summary>
+    /// Open all cameras in hardware trigger mode.
+    /// Cameras only capture when the external sensor fires via the trigger input line.
+    /// The grab thread blocks on GetImageBuffer until a triggered frame arrives.
+    /// </summary>
+    public void StartHardwareTrigger(CameraSlotConfig[] slotConfigs, IProgress<string>? progress = null)
+    {
+        if (IsStreaming) return;
+
+        for (int slot = 0; slot < CameraIndices.Length; slot++)
+        {
+            int camIdx = CameraIndices[slot];
+            if (camIdx < 0 || camIdx >= _deviceInfoList.Count)
+            {
+                progress?.Report($"CAM {slot + 1}: index {camIdx} not found (only {_deviceInfoList.Count} cameras)");
+                continue;
+            }
+
+            progress?.Report($"Opening CAM {slot + 1} (index {camIdx}) [HW trigger]...");
+            var device = DeviceFactory.CreateDevice(_deviceInfoList[camIdx]);
+            int result = device.Open();
+            if (result != MvError.MV_OK)
+            {
+                progress?.Report($"CAM {slot + 1}: Open failed 0x{result:X}");
+                continue;
+            }
+
+            // Optimize GigE packet size
+            if (device is IGigEDevice gigE)
+            {
+                if (gigE.GetOptimalPacketSize(out int packetSize) == MvError.MV_OK)
+                    device.Parameters.SetIntValue("GevSCPSPacketSize", packetSize);
+            }
+
+            // Hardware trigger mode
+            device.Parameters.SetEnumValueByString("AcquisitionMode", "Continuous");
+            device.Parameters.SetEnumValueByString("TriggerMode", "On");
+            device.Parameters.SetEnumValueByString("TriggerSource",
+                slot < slotConfigs.Length ? slotConfigs[slot].TriggerSource : "Line0");
+
+            Debug.WriteLine($"[CameraManager] CAM {slot + 1}: TriggerMode=On, TriggerSource={
+                (slot < slotConfigs.Length ? slotConfigs[slot].TriggerSource : "Line0")}");
+
+            _devices[slot] = device;
+
+            // Start grab thread (blocks on GetImageBuffer until hardware trigger fires)
+            _grabbing[slot] = true;
+            int capturedSlot = slot;
+            _grabThreads[slot] = new Thread(() => GrabThreadProc(capturedSlot))
+            {
+                IsBackground = true,
+                Name = $"CamGrab_HW_{slot}"
+            };
+            _grabThreads[slot]!.Start();
+
+            result = device.StreamGrabber.StartGrabbing();
+            if (result != MvError.MV_OK)
+            {
+                _grabbing[slot] = false;
+                progress?.Report($"CAM {slot + 1}: StartGrabbing failed 0x{result:X}");
+                continue;
+            }
+
+            progress?.Report($"CAM {slot + 1}: armed [HW trigger]");
+        }
+
+        IsStreaming = true;
+        IsHardwareTrigger = true;
+    }
+
+    /// <summary>
+    /// Block until a NEW frame arrives on the given slot (sequence number increments).
+    /// Returns the new frame, or null on timeout.
+    /// </summary>
+    public Bitmap? WaitForNewFrame(int slot, int timeoutMs = 5000)
+    {
+        if (slot < 0 || slot >= _latestFrames.Length) return null;
+
+        // Reset the signal so we wait for the NEXT frame
+        _frameArrived[slot].Reset();
+
+        // Wait for grab thread to signal a new frame
+        if (!_frameArrived[slot].Wait(timeoutMs))
+        {
+            Debug.WriteLine($"[CameraManager] WaitForNewFrame slot {slot}: timeout ({timeoutMs}ms)");
+            return null;
+        }
+
+        lock (_frameLocks[slot])
+        {
+            return _latestFrames[slot] != null ? new Bitmap(_latestFrames[slot]!) : null;
+        }
+    }
+
+    /// <summary>
+    /// Get the current frame sequence number for a slot (for detecting new frames).
+    /// </summary>
+    public long GetFrameSequence(int slot)
+    {
+        if (slot < 0 || slot >= _frameSequence.Length) return 0;
+        lock (_frameLocks[slot]) { return _frameSequence[slot]; }
+    }
+
+    /// <summary>
     /// Stop streaming on all cameras and close devices.
     /// </summary>
     public void StopStreaming()
@@ -197,6 +307,7 @@ public class CameraManager : IDisposable
         }
 
         IsStreaming = false;
+        IsHardwareTrigger = false;
     }
 
     /// <summary>
@@ -241,9 +352,12 @@ public class CameraManager : IDisposable
         var device = _devices[slot];
         if (device == null) return;
 
+        // Hardware trigger: use longer timeout since frames only arrive on sensor fire
+        uint grabTimeout = IsHardwareTrigger ? 5000u : 1000u;
+
         while (_grabbing[slot])
         {
-            int result = device.StreamGrabber.GetImageBuffer(1000, out IFrameOut? frameOut);
+            int result = device.StreamGrabber.GetImageBuffer(grabTimeout, out IFrameOut? frameOut);
             if (result == MvError.MV_OK && frameOut != null)
             {
                 try
@@ -257,6 +371,8 @@ public class CameraManager : IDisposable
                             _latestFrames[slot] = bmp;
                             _frameSequence[slot]++;
                         }
+                        // Signal any thread waiting for a new frame on this slot
+                        _frameArrived[slot].Set();
                     }
                 }
                 finally
@@ -278,6 +394,7 @@ public class CameraManager : IDisposable
                 _latestFrames[i]?.Dispose();
                 _latestFrames[i] = null;
             }
+            _frameArrived[i].Dispose();
         }
 
         if (_sdkInitialized)

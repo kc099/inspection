@@ -19,6 +19,12 @@ public class TriggerConfig
     public int PollIntervalMs { get; set; } = 200;
 
     /// <summary>
+    /// "software" (default): Modbus polling detects trigger, then captures frames.
+    /// "hardware": sensor wired directly to camera trigger input, frames arrive automatically.
+    /// </summary>
+    public string CameraTriggerMode { get; set; } = "software";
+
+    /// <summary>
     /// Rejection output coil configuration (addresses, delays, conflict priority).
     /// </summary>
     public OutputCoilConfig OutputCoils { get; set; } = new();

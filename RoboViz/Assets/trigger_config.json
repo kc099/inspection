@@ -7,6 +7,7 @@
   "OutputCoilAddress": 3003,
   "CaptureDelayMs": 400,
   "PollIntervalMs": 200,
+  "CameraTriggerMode": "hardware",
   "OutputCoils": {
     "Cam1_ReworkCoil": 4001,
     "Cam1_RejectCoil": 4002,

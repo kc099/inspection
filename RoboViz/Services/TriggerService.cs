@@ -28,6 +28,7 @@ public class TriggerService : IDisposable
     private BlockingCollection<TriggerEvent> _queue = new(boundedCapacity: 16);
     private Thread? _producerThread;
     private Thread? _consumerThread;
+    private Thread?[] _hwWatcherThreads = [];
     private volatile bool _running;
 
     // Edge detection: only trigger on LOW?HIGH transition
@@ -83,7 +84,46 @@ public class TriggerService : IDisposable
         _producerThread.Start();
         _consumerThread.Start();
 
-        MaskRCNNDetector.LogDiag("[Trigger] Producer-consumer started.");
+        MaskRCNNDetector.LogDiag("[Trigger] Producer-consumer started (software mode).");
+    }
+
+    /// <summary>
+    /// Start hardware-trigger mode: one watcher thread per trigger group
+    /// waits for camera frames to arrive (sensor ? camera hw trigger ? frame ? inference ? coils).
+    /// No Modbus polling for trigger detection needed.
+    /// </summary>
+    public void StartHardwareMode()
+    {
+        if (_running) return;
+        if (_cameras == null || _inspection == null)
+        {
+            Debug.WriteLine("[Trigger] Cannot start hardware mode: cameras or inspection null.");
+            return;
+        }
+
+        _running = true;
+
+        // Find distinct trigger groups that have cameras assigned
+        var groups = _cameraSlots
+            .Where(c => c.DeviceIndex >= 0)
+            .Select(c => c.TriggerGroup)
+            .Distinct()
+            .ToArray();
+
+        _hwWatcherThreads = new Thread[groups.Length];
+        for (int i = 0; i < groups.Length; i++)
+        {
+            int group = groups[i];
+            _hwWatcherThreads[i] = new Thread(() => HardwareWatcherLoop(group))
+            {
+                IsBackground = true,
+                Name = $"HWTrigger_G{group}"
+            };
+            _hwWatcherThreads[i].Start();
+            Debug.WriteLine($"[Trigger] Hardware watcher started for trigger group {group}.");
+        }
+
+        MaskRCNNDetector.LogDiag($"[Trigger] Hardware mode started: {groups.Length} watcher(s).");
     }
 
     public void Stop()
@@ -97,20 +137,24 @@ public class TriggerService : IDisposable
         // The producer may be stuck in a 1-second Modbus read timeout.
         var producer = _producerThread;
         var consumer = _consumerThread;
+        var hwWatchers = _hwWatcherThreads;
         _producerThread = null;
         _consumerThread = null;
+        _hwWatcherThreads = [];
 
-        if (producer != null || consumer != null)
+        if (producer != null || consumer != null || hwWatchers.Length > 0)
         {
             _ = Task.Run(() =>
             {
                 producer?.Join(3000);
                 consumer?.Join(3000);
+                foreach (var wt in hwWatchers)
+                    wt?.Join(6000); // Longer timeout: watcher may be blocked in WaitForNewFrame
                 Debug.WriteLine("[Trigger] Background threads joined.");
             });
         }
 
-        MaskRCNNDetector.LogDiag("[Trigger] Producer-consumer stopped.");
+        MaskRCNNDetector.LogDiag("[Trigger] Stopped.");
     }
 
     // ?? Producer ??????????????????????????????????????????????
@@ -401,6 +445,130 @@ public class TriggerService : IDisposable
             ModbusError = modbusError,
             CoilsActivated = coilsActivated,
         });
+    }
+
+    // ?? Hardware Trigger Watcher ?????????????????????????????????
+
+    /// <summary>
+    /// Watcher loop for one trigger group in hardware-trigger mode.
+    /// Waits for a frame to arrive from any camera in the group (sensor ? camera HW trigger),
+    /// then collects all group frames, runs inference, and writes rejection coils.
+    /// </summary>
+    private void HardwareWatcherLoop(int triggerGroup)
+    {
+        string label = $"HW-Trigger {triggerGroup}";
+        var groupSlots = _cameraSlots
+            .Where(c => c.TriggerGroup == triggerGroup && c.DeviceIndex >= 0)
+            .ToArray();
+
+        if (groupSlots.Length == 0)
+        {
+            Debug.WriteLine($"[{label}] No cameras assigned, exiting watcher.");
+            return;
+        }
+
+        // Pick the first slot as the "sentinel" — when it gets a frame, the sensor fired
+        int sentinelSlot = groupSlots[0].Slot;
+        Debug.WriteLine($"[{label}] Watching {groupSlots.Length} camera(s), sentinel=CAM {sentinelSlot + 1}");
+
+        while (_running)
+        {
+            try
+            {
+                // Block until sentinel camera delivers a frame from hardware trigger
+                var frame = _cameras!.WaitForNewFrame(sentinelSlot, timeoutMs: 5000);
+                if (frame == null)
+                {
+                    // Timeout — no trigger fired, loop and wait again
+                    continue;
+                }
+                frame.Dispose(); // We'll re-grab all frames below
+
+                var triggerTime = DateTime.UtcNow;
+                Debug.WriteLine($"[{label}] >>> Frame arrived on CAM {sentinelSlot + 1} at {DateTime.Now:HH:mm:ss.fff}");
+                MaskRCNNDetector.LogDiag($"[{label}] Hardware trigger detected.");
+
+                // Small delay to let all cameras in this group finish their exposure
+                Thread.Sleep(50);
+
+                // Collect frames from all cameras in this group
+                var frames = new Bitmap?[groupSlots.Length];
+                for (int i = 0; i < groupSlots.Length; i++)
+                {
+                    int slot = groupSlots[i].Slot;
+                    if (slot == sentinelSlot)
+                    {
+                        // Sentinel already has a fresh frame
+                        frames[i] = _cameras.GetLatestFrame(slot);
+                    }
+                    else
+                    {
+                        // Other cameras in same group: wait briefly for their frame
+                        frames[i] = _cameras.WaitForNewFrame(slot, timeoutMs: 2000)
+                                    ?? _cameras.GetLatestFrame(slot);
+                    }
+                    Debug.WriteLine($"[{label}] CAM {slot + 1}: {(frames[i] != null ? "OK" : "NULL")}");
+                }
+
+                // Run inference
+                if (_inspection == null) continue;
+
+                var resultList = new System.Collections.Generic.List<InspectionResult>();
+                var frameList = new System.Collections.Generic.List<Bitmap>();
+                var slotList = new System.Collections.Generic.List<int>();
+                var sw = Stopwatch.StartNew();
+
+                for (int i = 0; i < groupSlots.Length; i++)
+                {
+                    if (frames[i] == null) continue;
+                    var slotCfg = groupSlots[i];
+
+                    Debug.WriteLine($"[{label}] CAM {slotCfg.Slot + 1} frame: {frames[i]!.Width}x{frames[i]!.Height} px, detector={slotCfg.Detector}");
+                    bool skipGeo = slotCfg.Detector != "MaskRCNN";
+                    var result = _inspection.InspectMaskRCNN(frames[i]!, triggerGroup, skipGeo, slot: slotCfg.Slot);
+                    resultList.Add(result);
+                    frameList.Add(frames[i]!);
+                    slotList.Add(slotCfg.Slot);
+
+                    Debug.WriteLine($"[{label}] CAM {slotCfg.Slot + 1} [{slotCfg.Detector}] => {result.Verdict} | " +
+                        $"total={result.TotalMs}ms" +
+                        (result.FailReasons.Count > 0 ? $" | reasons=[{string.Join(", ", result.FailReasons)}]" : ""));
+                }
+
+                var results = resultList.ToArray();
+                long batchMs = sw.ElapsedMilliseconds;
+                Debug.WriteLine($"[{label}] Batch complete: {batchMs}ms | verdicts=[{string.Join(", ", results.Select(r => r.Verdict))}]");
+
+                // Dispose frames not used as overlay
+                for (int i = 0; i < frameList.Count; i++)
+                {
+                    if (!ReferenceEquals(frameList[i], results[i].OverlayImage))
+                        frameList[i].Dispose();
+                }
+
+                // Write rejection coils (same logic as software mode)
+                var (modbusOk, modbusError, coilsActivated) = WriteRejectionCoils(triggerGroup, results, slotList);
+
+                var triggerType = triggerGroup == 1 ? TriggerType.Trigger1 : TriggerType.Trigger2;
+                _onResult(new TriggerResultEvent
+                {
+                    Type = triggerType,
+                    Results = results,
+                    Slots = [.. slotList],
+                    BatchMs = batchMs,
+                    ModbusWriteOk = modbusOk,
+                    ModbusError = modbusError,
+                    CoilsActivated = coilsActivated,
+                });
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[{label}] Watcher error: {ex.Message}");
+                MaskRCNNDetector.LogDiag($"[{label}] Watcher error: {ex.Message}");
+            }
+        }
+
+        Debug.WriteLine($"[{label}] Watcher exiting.");
     }
 
     /// <summary>

@@ -81,6 +81,9 @@ namespace RoboViz
             _clockTimer.Tick += (_, _) => DateTimeText.Text = DateTime.Now.ToString("yyyy-MM-dd  HH:mm:ss");
             _clockTimer.Start();
             DateTimeText.Text = DateTime.Now.ToString("yyyy-MM-dd  HH:mm:ss");
+
+            // Initialize auto-start checkbox from registry state
+            ChkAutoStart.IsChecked = App.IsAutoStartEnabled();
         }
 
         private async void Window_Loaded(object sender, RoutedEventArgs e)
@@ -307,12 +310,31 @@ namespace RoboViz
                 result => Dispatcher.BeginInvoke(() => OnTriggerResult(result)),
                 poll   => Dispatcher.BeginInvoke(() => OnPollStatus(poll)));
 
-            _triggerService.Start();
+            bool isHardwareMode = string.Equals(config.CameraTriggerMode, "hardware", StringComparison.OrdinalIgnoreCase);
+
+            if (isHardwareMode)
+            {
+                // Hardware trigger: start cameras in trigger mode, then launch watcher threads
+                if (_cameraManager != null && !_cameraManager.IsStreaming)
+                {
+                    _cameraManager.StartHardwareTrigger(_cameraSlots);
+                    _isStreaming = true;
+                }
+                _triggerService.StartHardwareMode();
+            }
+            else
+            {
+                // Software trigger: Modbus polling producer-consumer (existing behavior)
+                _triggerService.Start();
+            }
+
             BtnTriggerStart.IsEnabled = false;
             BtnTriggerStop.IsEnabled = true;
-            TriggerStatusText.Text = $"Running \u2014 {config.ComPort} @ {config.BaudRate} " +
-                $"(slave {config.SlaveId}) | poll {config.PollIntervalMs}ms | " +
-                $"coils {config.TriggerCoil_Cam13}/{config.TriggerCoil_Cam24}";
+            string modeLabel = isHardwareMode ? "HW TRIGGER" : "SW TRIGGER";
+            TriggerStatusText.Text = $"Running [{modeLabel}] \u2014 {config.ComPort} @ {config.BaudRate} " +
+                $"(slave {config.SlaveId})" +
+                (isHardwareMode ? "" : $" | poll {config.PollIntervalMs}ms") +
+                $" | coils {config.TriggerCoil_Cam13}/{config.TriggerCoil_Cam24}";
             TriggerStatusText.Foreground = ReadyGreen;
         }
 
@@ -873,6 +895,14 @@ namespace RoboViz
                 error = $"Coil {coilAddress} exception: {ex.Message}";
                 return false;
             }
+        }
+
+        private void ChkAutoStart_Changed(object sender, RoutedEventArgs e)
+        {
+            if (ChkAutoStart.IsChecked == true)
+                App.RegisterAutoStart();
+            else
+                App.RemoveAutoStart();
         }
 
         protected override void OnClosed(EventArgs e)
