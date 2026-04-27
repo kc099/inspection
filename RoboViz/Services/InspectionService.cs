@@ -12,18 +12,12 @@ using System.Windows.Media.Imaging;
 namespace RoboViz;
 
 /// <summary>
-/// Full inspection pipeline supporting two detector types:
-///   - Mask R-CNN for CAM 1, 3 (defect segmentation)
-///   - PatchCore for CAM 2, 4 (anomaly detection)
+/// Full inspection pipeline using Mask R-CNN for all cameras.
 ///
 /// Pipeline per frame:
-///   Mask R-CNN (CAM 1, 3):
-///     1. Geometric measurement on raw image
-///     2. Evaluate rework/reject thresholds
-///     3. If geometric PASS: bin+crop to 720x720 then detect
-///   PatchCore (CAM 2, 4 — side view, no hole visible):
-///     1. 4x4 bin to 512x384, YOLO seg crop, resize 384x384
-///     2. PatchCore anomaly detection (no geometric measurement)
+///   CAM 1 (slot 0): Geometric measurement (Measure) ? threshold eval ? MaskRCNN
+///   CAM 2 (slot 1): Geometric measurement (MeasureCam2) ? threshold eval ? MaskRCNN
+///   CAM 3/4 (slot 2/3, SkipGeoMeasurement=true): Resize to 512×384 ? MaskRCNN directly
 ///   Final verdict: REWORK / REJECT / PASS
 /// </summary>
 public class InspectionService : IDisposable
@@ -57,8 +51,6 @@ public class InspectionService : IDisposable
         _currentModel = modelName;
         (_thresholdsCam3001, _thresholdsCam3002) = LoadThresholdsForModel(modelName);
     }
-
-    public float PatchCoreThreshold => 0f;
 
     private static (Dictionary<string, MetricThreshold> cam3001, Dictionary<string, MetricThreshold> cam3002)
         LoadThresholdsForModel(string modelName)
@@ -95,7 +87,6 @@ public class InspectionService : IDisposable
             geoVerdict = "ERROR";
             return new InspectionResult
             {
-                DetectorType = detectorType,
                 Verdict = "ERROR",
                 TotalMs = totalSw.ElapsedMilliseconds,
                 GeoMs = geoMs,
@@ -112,7 +103,6 @@ public class InspectionService : IDisposable
 
         var result = new InspectionResult
         {
-            DetectorType = detectorType,
             GeoResult = geoResult,
             MetricResults = metricResults,
             GeoMs = geoMs,
@@ -151,7 +141,7 @@ public class InspectionService : IDisposable
         }
         else
         {
-            result = new InspectionResult { DetectorType = "MaskRCNN" };
+            result = new InspectionResult();
         }
 
         var prepSw = Stopwatch.StartNew();
@@ -280,7 +270,10 @@ public class InspectionService : IDisposable
 
     /// <summary>
     /// Resize any input image to exactly 512x384 for the combined MaskRCNN model.
-    /// Uses 4x4 binning when input is 2048x1536; high-quality resize otherwise.
+    /// - 2048x1536 inputs use a clean 4x4 bin (aspect already 4:3).
+    /// - All other sizes (e.g. 2448x2048) are letterboxed: scaled by
+    ///   min(512/W, 384/H) and centered on a black 512x384 canvas so the
+    ///   object geometry seen by the model is not distorted.
     /// </summary>
     private static Bitmap ResizeTo512x384(Bitmap original)
     {
@@ -290,12 +283,20 @@ public class InspectionService : IDisposable
         if (original.Width == 2048 && original.Height == 1536)
             return BinTo512x384(original);
 
+        double scale = Math.Min((double)targetW / original.Width,
+                                (double)targetH / original.Height);
+        int fittedW = Math.Max(1, (int)Math.Round(original.Width * scale));
+        int fittedH = Math.Max(1, (int)Math.Round(original.Height * scale));
+        int offsetX = (targetW - fittedW) / 2;
+        int offsetY = (targetH - fittedH) / 2;
+
         var result = new Bitmap(targetW, targetH, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
         using (var g = Graphics.FromImage(result))
         {
+            g.Clear(System.Drawing.Color.Black);
             g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
             g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
-            g.DrawImage(original, 0, 0, targetW, targetH);
+            g.DrawImage(original, offsetX, offsetY, fittedW, fittedH);
         }
         return result;
     }

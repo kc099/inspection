@@ -81,6 +81,9 @@ namespace RoboViz
             _clockTimer.Tick += (_, _) => DateTimeText.Text = DateTime.Now.ToString("yyyy-MM-dd  HH:mm:ss");
             _clockTimer.Start();
             DateTimeText.Text = DateTime.Now.ToString("yyyy-MM-dd  HH:mm:ss");
+
+            // Initialize auto-start checkbox from registry state
+            ChkAutoStart.IsChecked = App.IsAutoStartEnabled();
         }
 
         private async void Window_Loaded(object sender, RoutedEventArgs e)
@@ -98,6 +101,33 @@ namespace RoboViz
                 // Use longer timeout for PCIe Gen2 systems (up to 3 minutes)
                 var loadTask = Task.Run(() =>
                 {
+                    // Load YOLO contour model FIRST — it's small (CPU, <1s) and is required
+                    // by MeasureCam2. Doing it before the long MaskRCNN GPU warmup ensures
+                    // it is ready even if the user clicks Analyze the moment _service becomes non-null.
+                    string yoloPath = Path.Combine(
+                        AppDomain.CurrentDomain.BaseDirectory, "Assets", "yolo11n_seg_contour.onnx");
+                    if (File.Exists(yoloPath))
+                    {
+                        var yolo = new YoloContourDetector();
+                        yolo.LoadModel(yoloPath, progress);
+                        OringMeasurement.SetCam2YoloDetector(yolo);
+                    }
+                    else
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[Init] YOLO contour model not found: {yoloPath}");
+                    }
+
+                    // Load cam2 background image (legacy fallback path; cheap)
+                    string cam2BgPath = Path.Combine(
+                        AppDomain.CurrentDomain.BaseDirectory, "Assets", "background.bmp");
+                    if (File.Exists(cam2BgPath))
+                        OringMeasurement.LoadCam2Background(cam2BgPath);
+                    else
+                        System.Diagnostics.Debug.WriteLine($"[Init] Cam2 background not found: {cam2BgPath}");
+
+                    // Now the slow one — MaskRCNN with GPU warmup. _service is assigned
+                    // only after this returns, so the Analyze button stays disabled until
+                    // both YOLO and MaskRCNN are ready.
                     string modelPath = Path.Combine(
                         AppDomain.CurrentDomain.BaseDirectory, "Assets", "maskrcnn_oring_combined.onnx");
 
@@ -106,14 +136,6 @@ namespace RoboViz
 
                     _service = new InspectionService(modelPath, scoreThreshold: 0.5f,
                         useGpu: true, progress: progress, modelName: "Model 2");
-
-                    // Load cam2 background image for ratio-normalization pipeline
-                    string cam2BgPath = Path.Combine(
-                        AppDomain.CurrentDomain.BaseDirectory, "Assets", "background.bmp");
-                    if (File.Exists(cam2BgPath))
-                        OringMeasurement.LoadCam2Background(cam2BgPath);
-                    else
-                        System.Diagnostics.Debug.WriteLine($"[Init] Cam2 background not found: {cam2BgPath}");
                 });
 
                 // Wait with extended timeout for PCIe Gen2 + older CPU
@@ -143,10 +165,10 @@ namespace RoboViz
                 PopulateMetricsTable();
                 UpdateCameraConfigSummary();
 
-                // Initialize cameras (enumerate devices) but don't start streaming yet
+                // Initialize cameras (enumerate devices) but don't arm hardware trigger yet.
                 await InitializeCamerasAsync(progress);
 
-                // Auto-start trigger mode (cameras will start streaming on-demand when trigger fires)
+                // Auto-start trigger mode and arm cameras for hardware-trigger capture.
                 AutoStartTrigger();
             }
             catch (Exception ex)
@@ -183,14 +205,25 @@ namespace RoboViz
         }
 
         /// <summary>
+        /// Apply the persisted slot-to-device mapping to CameraManager before enumeration/arming.
+        /// </summary>
+        private void ApplyCameraSlotSelection()
+        {
+            CameraManager.CameraIndices = _cameraSlots
+                .Select(c => c.DeviceIndex)
+                .ToArray();
+        }
+
+        /// <summary>
         /// Initialize camera manager and enumerate devices WITHOUT starting streaming.
-        /// Cameras will start on-demand when first trigger fires.
+        /// Cameras are only armed when trigger mode starts.
         /// </summary>
         private async Task InitializeCamerasAsync(IProgress<string>? progress)
         {
             try
             {
                 progress?.Report("Enumerating cameras...");
+                ApplyCameraSlotSelection();
                 _cameraManager = new CameraManager();
 
                 int found = await Task.Run(() => _cameraManager.Initialize());
@@ -241,6 +274,7 @@ namespace RoboViz
         {
             if (_isStreaming) return true;
 
+            ApplyCameraSlotSelection();
             _cameraManager ??= new CameraManager();
 
             int found = await Task.Run(() => _cameraManager.Initialize());
@@ -253,7 +287,7 @@ namespace RoboViz
             var descriptions = _cameraManager.GetCameraDescriptions();
             DetailsText.Text = $"Found {found} camera(s):\n" + string.Join("\n", descriptions);
 
-            await Task.Run(() => _cameraManager.StartStreaming(progress));
+            await Task.Run(() => _cameraManager.StartHardwareTrigger(_cameraSlots, progress));
 
             _isStreaming = true;
             BtnStream.Content = "Stop Stream";
@@ -275,45 +309,66 @@ namespace RoboViz
             if (_triggerService?.IsRunning == true) return;
 
             var config = TriggerConfig.Load();
+            ApplyCameraSlotSelection();
 
-            // Diagnostic: enumerate available COM ports
-            var availablePorts = ModbusService.GetAvailablePorts();
-            Debug.WriteLine($"[Trigger] Available COM ports: {string.Join(", ", availablePorts)}");
-            Debug.WriteLine($"[Trigger] Attempting to connect to {config.ComPort} @ {config.BaudRate} baud, slave {config.SlaveId}");
-
-            if (availablePorts.Length == 0)
-            {
-                throw new InvalidOperationException("No COM ports found on this system. Check USB-to-RS485 adapter connection.");
-            }
-
-            if (!availablePorts.Contains(config.ComPort))
-            {
-                string available = string.Join(", ", availablePorts);
-                throw new InvalidOperationException(
-                    $"COM port '{config.ComPort}' not found. Available ports: {available}. " +
-                    $"Update trigger_config.json or check device connections.");
-            }
-
+            // Connect Modbus for OUTPUT coils only (REJECT/REWORK signals to PLC).
+            // If connection fails, triggers still work; only output coils are skipped.
             var triggerModbus = new ModbusService();
-            if (!triggerModbus.Connect(config.ComPort, config.BaudRate, config.SlaveId))
+            bool modbusOk = false;
+            try
             {
-                string err = triggerModbus.LastError ?? "unknown error";
+                var availablePorts = ModbusService.GetAvailablePorts();
+                Debug.WriteLine($"[Trigger] Available COM ports: {string.Join(", ", availablePorts)}");
+
+                if (availablePorts.Contains(config.ComPort))
+                {
+                    modbusOk = triggerModbus.Connect(config.ComPort, config.BaudRate, config.SlaveId);
+                    if (modbusOk)
+                        Debug.WriteLine($"[Trigger] Modbus connected for output coils: {config.ComPort} @ {config.BaudRate}");
+                    else
+                        Debug.WriteLine($"[Trigger] Modbus connect failed (output coils disabled): {triggerModbus.LastError}");
+                }
+                else
+                {
+                    Debug.WriteLine($"[Trigger] COM port '{config.ComPort}' not found — output coils disabled.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[Trigger] Modbus init error: {ex.Message}");
+            }
+
+            if (!modbusOk)
+            {
                 triggerModbus.Dispose();
-                throw new InvalidOperationException($"Modbus connect failed ({config.ComPort}): {err}");
+                triggerModbus = new ModbusService(); // disconnected instance passed in
             }
 
             _triggerService = new TriggerService(
                 triggerModbus, _cameraManager, _service, config, _cameraSlots,
-                result => Dispatcher.BeginInvoke(() => OnTriggerResult(result)),
-                poll   => Dispatcher.BeginInvoke(() => OnPollStatus(poll)));
+                result => Dispatcher.BeginInvoke(() => OnTriggerResult(result)));
+
+            // Always hardware trigger mode: cameras must be armed before sentinel waiters start.
+            if (_cameraManager != null && !_cameraManager.IsStreaming)
+            {
+                Debug.WriteLine("[MainWindow] Starting cameras in HARDWARE TRIGGER mode...");
+                _cameraManager.StartHardwareTrigger(_cameraSlots);
+                _isStreaming = true;
+            }
+            else
+            {
+                Debug.WriteLine($"[MainWindow] Cameras already streaming or not available (IsStreaming={_cameraManager?.IsStreaming})");
+            }
 
             _triggerService.Start();
+
             BtnTriggerStart.IsEnabled = false;
             BtnTriggerStop.IsEnabled = true;
-            TriggerStatusText.Text = $"Running \u2014 {config.ComPort} @ {config.BaudRate} " +
-                $"(slave {config.SlaveId}) | poll {config.PollIntervalMs}ms | " +
-                $"coils {config.TriggerCoil_Cam13}/{config.TriggerCoil_Cam24}";
+            string modbusStatus = modbusOk ? $"{config.ComPort} @ {config.BaudRate}" : "no output coils";
+            TriggerStatusText.Text = $"Running [HW TRIGGER] — {modbusStatus} | waiting for camera-triggered frames...";
             TriggerStatusText.Foreground = ReadyGreen;
+
+            Debug.WriteLine("[MainWindow] Hardware trigger mode started.");
         }
 
         private void OnPollStatus(TriggerPollStatus poll)
@@ -382,32 +437,41 @@ namespace RoboViz
 
         private void UpdateCameraLabels()
         {
-            if (_camLabels == null) return;
+        if (_camLabels == null) return;
             for (int i = 0; i < FrameCount; i++)
             {
                 var cfg = _cameraSlots[i];
-                string det = cfg.Detector == "MaskRCNN" ? "MRCNN" : "PCore";
                 string trig = $"T{cfg.TriggerGroup}";
-                _camLabels[i].Text = $"CAM {i + 1} [{det}] [{trig}]";
+                _camLabels[i].Text = $"CAM {i + 1} [MRCNN] [{trig}]";
             }
         }
-
-        private string GetDetectorForCamera(int camIndex) =>
-            _cameraSlots[camIndex].Detector;
 
         private static CameraSlotConfig[] LoadOrDefaultSlots()
         {
             var saved = CameraSlotConfig.Load();
-            if (saved is { Length: 4 })
-                return saved;
+            CameraSlotConfig[] cfgs = saved is { Length: 4 }
+                ? saved
+                :
+                [
+                    new() { Slot = 0, TriggerGroup = 1, Detector = "MaskRCNN", CaptureDelayMs = 50 },
+                    new() { Slot = 1, TriggerGroup = 2, Detector = "MaskRCNN", CaptureDelayMs = 50 },
+                    new() { Slot = 2, TriggerGroup = 2, Detector = "MaskRCNN", SkipGeoMeasurement = true, CaptureDelayMs = 50 },
+                    new() { Slot = 3, TriggerGroup = 2, Detector = "MaskRCNN", SkipGeoMeasurement = true, CaptureDelayMs = 50 },
+                ];
 
-            return
-            [
-                new() { Slot = 0, TriggerGroup = 1, Detector = "MaskRCNN",  CaptureDelayMs = 50 },
-                new() { Slot = 1, TriggerGroup = 1, Detector = "MaskRCNN",  CaptureDelayMs = 50 },
-                new() { Slot = 2, TriggerGroup = 1, Detector = "PatchCore", CaptureDelayMs = 50 },
-                new() { Slot = 3, TriggerGroup = 2, Detector = "PatchCore", CaptureDelayMs = 50 },
-            ];
+            // Normalize slot-position invariants regardless of what an older
+            // camera_slots.json on disk says:
+            //   • slots 0/1 ALWAYS run geometric measurement (cam1 OpenCV / cam2 YOLO)
+            //   • slots 2/3 are side-view cameras with no visible hole — resize-only,
+            //     no geometric measurement under any circumstance.
+            //   • Detector is always MaskRCNN.
+            for (int i = 0; i < cfgs.Length; i++)
+            {
+                cfgs[i].Slot = i;
+                cfgs[i].Detector = "MaskRCNN";
+                cfgs[i].SkipGeoMeasurement = (i >= 2);
+            }
+            return cfgs;
         }
 
         private void UpdateCameraConfigSummary()
@@ -416,16 +480,13 @@ namespace RoboViz
             for (int i = 0; i < 4; i++)
             {
                 var cfg = _cameraSlots[i];
-                string det = cfg.Detector == "MaskRCNN" ? "MRCNN" : "PCore";
                 string dev = cfg.DeviceIndex >= 0 ? $"dev {cfg.DeviceIndex}" : "none";
-                lines.Add($"CAM {i + 1}: {dev} | {det} | T{cfg.TriggerGroup} | {cfg.CaptureDelayMs}ms");
+                string geo = cfg.SkipGeoMeasurement ? "no-geo" : "geo";
+                lines.Add($"CAM {i + 1}: {dev} | MRCNN | {geo} | T{cfg.TriggerGroup} | {cfg.CaptureDelayMs}ms");
             }
             int t1 = _cameraSlots.Count(c => c.DeviceIndex >= 0 && c.TriggerGroup == 1);
             int t2 = _cameraSlots.Count(c => c.DeviceIndex >= 0 && c.TriggerGroup == 2);
             lines.Add($"Trigger 1: {t1} cam(s)  •  Trigger 2: {t2} cam(s)");
-
-            if (_service != null && _service.PatchCoreThreshold > 0)
-                lines.Add($"PatchCore threshold: {_service.PatchCoreThreshold:F2}  ({_service.CurrentModel})");
 
             CameraConfigText.Text = string.Join("\n", lines);
         }
@@ -450,11 +511,20 @@ namespace RoboViz
             BtnAnalyze.IsEnabled = _currentImage != null;
         }
 
-        private void PopulateMetricsTable(List<MetricEvalResult>? metricResults = null)
+        private void PopulateMetricsTable(
+            List<MetricEvalResult>? cam1Metrics = null,
+            List<MetricEvalResult>? cam2Metrics = null)
         {
             if (_service == null) return;
             var t1 = _service.ThresholdsCam3001;
             var t2 = _service.ThresholdsCam3002;
+
+            static MetricEvalResult? FindByKey(List<MetricEvalResult>? list, string key)
+            {
+                if (list == null) return null;
+                foreach (var mr in list) if (mr.Key == key) return mr;
+                return null;
+            }
 
             var rows = new List<MetricRowViewModel>();
             foreach (var def in ThresholdConfig.MetricDefs)
@@ -466,14 +536,8 @@ namespace RoboViz
                 t1.TryGetValue(def.Key, out var th1);
                 t2.TryGetValue(def.Key, out var th2);
 
-                MetricEvalResult? evalResult = null;
-                if (metricResults != null)
-                {
-                    foreach (var mr in metricResults)
-                    {
-                        if (mr.Key == def.Key) { evalResult = mr; break; }
-                    }
-                }
+                var er1 = FindByKey(cam1Metrics, def.Key);
+                var er2 = FindByKey(cam2Metrics, def.Key);
 
                 static string FormatDual(double? v1, double? v2, string f)
                 {
@@ -489,19 +553,48 @@ namespace RoboViz
                     HiText = FormatDual(th1?.Hi, th2?.Hi, fmt),
                 };
 
-                if (evalResult != null)
+                // Value 1 (CAM 1) — colored by its own pass/fail
+                if (er1 != null)
                 {
-                    row.ValueText = evalResult.Value.ToString(fmt);
-                    row.StatusText = evalResult.Passed ? "PASS" : "FAIL";
-                    row.ValueColor = evalResult.Passed ? NormalGray : FailRed;
-                    row.StatusColor = evalResult.Passed ? PassGreen : FailRed;
+                    row.ValueText = er1.Value.ToString(fmt);
+                    row.ValueColor = er1.Passed ? NormalGray : FailRed;
                 }
                 else
                 {
                     row.ValueText = "\u2014";
-                    row.StatusText = "\u2014";
                     row.ValueColor = DimGray;
+                }
+
+                // Value 2 (CAM 2) — colored by its own pass/fail
+                if (er2 != null)
+                {
+                    row.Value2Text = er2.Value.ToString(fmt);
+                    row.Value2Color = er2.Passed ? NormalGray : FailRed;
+                }
+                else
+                {
+                    row.Value2Text = "\u2014";
+                    row.Value2Color = DimGray;
+                }
+
+                // Status: combined — FAIL if either camera failed; PASS only when both pass.
+                // If one camera has no result, the other's status alone drives the column.
+                bool? combined = (er1, er2) switch
+                {
+                    (null, null) => null,
+                    (null, var b) => b!.Passed,
+                    (var a, null) => a!.Passed,
+                    (var a, var b) => a!.Passed && b!.Passed,
+                };
+                if (combined is null)
+                {
+                    row.StatusText = "\u2014";
                     row.StatusColor = DimGray;
+                }
+                else
+                {
+                    row.StatusText = combined.Value ? "PASS" : "FAIL";
+                    row.StatusColor = combined.Value ? PassGreen : FailRed;
                 }
 
                 rows.Add(row);
@@ -587,15 +680,14 @@ namespace RoboViz
                 _cameraSlots = dialog.ResultConfigs;
                 try { CameraSlotConfig.Save(_cameraSlots); }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[Config] Save failed: {ex.Message}"); }
-                CameraManager.CameraIndices = _cameraSlots
-                    .Select(c => c.DeviceIndex)
-                    .ToArray();
+                ApplyCameraSlotSelection();
 
                 UpdateCameraLabels();
                 UpdateCameraConfigSummary();
 
                 var progress = new Progress<string>(s => StatusText.Text = s);
-                await Task.Run(() => _cameraManager.StartStreaming(progress));
+                // Always start in hardware trigger mode — cameras capture only on 24V signal
+                await Task.Run(() => _cameraManager.StartHardwareTrigger(_cameraSlots, progress));
 
                 _isStreaming = true;
                 BtnStream.Content = "Stop Stream";
@@ -619,8 +711,9 @@ namespace RoboViz
         {
             if (_service == null) return;
 
-            // During streaming, use latest camera frames; otherwise use loaded image
-            bool useCamera = _isStreaming && _cameraManager != null;
+            // A loaded image always takes priority (user-initiated test).
+            // Only fall back to live camera frames when no image is loaded.
+            bool useCamera = _currentImage == null && _isStreaming && _cameraManager != null;
             if (!useCamera && _currentImage == null) return;
 
             BtnAnalyze.IsEnabled = false;
@@ -662,8 +755,10 @@ namespace RoboViz
                 Parallel.For(0, frameCount, i =>
                 {
                     string detector = slotConfigs[i].Detector;
-                    bool skipGeo = detector != "MaskRCNN";
-                    results[i] = _service.InspectMaskRCNN(copies[i], slotConfigs[i].TriggerGroup, skipGeo, slot: i);
+                    bool skipGeo = slotConfigs[i].SkipGeoMeasurement;
+                    // Use the camera's configured physical slot so the geometric method
+                    // selection (Measure vs MeasureCam2) matches the trigger path.
+                    results[i] = _service.InspectMaskRCNN(copies[i], slotConfigs[i].TriggerGroup, skipGeo, slot: slotConfigs[i].Slot);
                 });
                 batchMs = batchSw.ElapsedMilliseconds;
 
@@ -692,17 +787,7 @@ namespace RoboViz
                     _imageDisplays[i].Source = InspectionService.BitmapToBitmapSource(r.OverlayImage);
                 _verdictLabels[i].Text = r.Verdict;
                 _verdictLabels[i].Foreground = VerdictColorMap.GetValueOrDefault(r.Verdict, NormalGray);
-
-                // Show score vs threshold on PatchCore camera tiles
-                if (GetDetectorForCamera(i) == "PatchCore" && r.DetectorType == "PatchCore")
-                {
-                    _scoreLabels[i].Text = $"Score: {r.AnomalyScore:F2}  |  Threshold: {r.AnomalyThreshold:F2}";
-                    _scoreLabels[i].Foreground = r.HasDefect ? FailRed : PassGreen;
-                }
-                else
-                {
-                    _scoreLabels[i].Text = "";
-                }
+                _scoreLabels[i].Text = "";
             }
 
             // Show READY in the banner (per-cam verdicts stay on each image tile)
@@ -710,33 +795,24 @@ namespace RoboViz
             VerdictText.Foreground = ReadyGreen;
             VerdictBorder.Background = VerdictNeutralBg;
 
-            PopulateMetricsTable(results[0].MetricResults);
-
-            string[] camTypes = new string[count];
+            // Metric panel: show CAM 1 (slot 0) in "Value 1" and CAM 2 (slot 1) in "Value 2".
+            // Slots 2/3 are skip-geo so they have no MetricResults to display here.
+            List<MetricEvalResult>? cam1 = null, cam2 = null;
             for (int i = 0; i < count; i++)
-                camTypes[i] = GetDetectorForCamera(i) == "MaskRCNN" ? "MRCNN" : "PCore";
+            {
+                var slot = i < _cameraSlots.Length ? _cameraSlots[i].Slot : i;
+                if (slot == 0) cam1 = results[i].MetricResults;
+                else if (slot == 1) cam2 = results[i].MetricResults;
+            }
+            PopulateMetricsTable(cam1, cam2);
+
             var timing = new System.Text.StringBuilder();
             timing.Append($"BATCH ({count} frames): {batchMs} ms total  |  ");
             timing.AppendLine($"Avg: {batchMs / count} ms/frame");
             for (int i = 0; i < count; i++)
             {
                 if (i > 0) timing.Append("  |  ");
-                timing.Append($"CAM {i + 1} ({camTypes[i]}): {results[i].TotalMs} ms");
-            }
-            timing.AppendLine();
-            timing.Append("PatchCore");
-            for (int i = 0; i < count; i++)
-            {
-                if (GetDetectorForCamera(i) == "PatchCore")
-                    timing.Append($"  CAM {i + 1}: {results[i].AnomalyScore:F2}  |");
-            }
-            for (int i = 0; i < count; i++)
-            {
-                if (GetDetectorForCamera(i) == "PatchCore")
-                {
-                    timing.Append($"  Threshold: {results[i].AnomalyThreshold:F2}");
-                    break;
-                }
+                timing.Append($"CAM {i + 1}: {results[i].TotalMs} ms");
             }
             CycleTimeText.Text = timing.ToString();
 
@@ -875,6 +951,14 @@ namespace RoboViz
             }
         }
 
+        private void ChkAutoStart_Changed(object sender, RoutedEventArgs e)
+        {
+            if (ChkAutoStart.IsChecked == true)
+                App.RegisterAutoStart();
+            else
+                App.RemoveAutoStart();
+        }
+
         protected override void OnClosed(EventArgs e)
         {
             _triggerService?.Dispose();
@@ -999,22 +1083,21 @@ namespace RoboViz
 
                 _verdictLabels[slot].Text = r.Verdict;
                 _verdictLabels[slot].Foreground = VerdictColorMap.GetValueOrDefault(r.Verdict, NormalGray);
-
-                // Show score vs threshold on PatchCore camera tiles
-                if (GetDetectorForCamera(slot) == "PatchCore" && r.DetectorType == "PatchCore")
-                {
-                    _scoreLabels[slot].Text = $"Score: {r.AnomalyScore:F2}  |  Threshold: {r.AnomalyThreshold:F2}";
-                    _scoreLabels[slot].Foreground = r.HasDefect ? FailRed : PassGreen;
-                }
-                else
-                {
-                    _scoreLabels[slot].Text = "";
-                }
+                _scoreLabels[slot].Text = "";
             }
 
             // Update metrics table from first result
             if (evt.Results.Length > 0)
-                PopulateMetricsTable(evt.Results[0].MetricResults);
+            {
+                List<MetricEvalResult>? cam1 = null, cam2 = null;
+                for (int i = 0; i < evt.Results.Length && i < evt.Slots.Length; i++)
+                {
+                    int slot = evt.Slots[i];
+                    if (slot == 0) cam1 = evt.Results[i].MetricResults;
+                    else if (slot == 1) cam2 = evt.Results[i].MetricResults;
+                }
+                PopulateMetricsTable(cam1, cam2);
+            }
 
             string modbusInfo = evt.ModbusWriteOk
                 ? $"coils: {evt.CoilsActivated}"

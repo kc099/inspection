@@ -10,8 +10,6 @@ public partial class CameraSetupDialog : Window
 {
     private readonly List<string> _cameraDescriptions;
     private readonly ComboBox[] _combos;
-    private readonly RadioButton[] _detMR;
-    private readonly RadioButton[] _detPC;
     private readonly RadioButton[] _trig1;
     private readonly RadioButton[] _trig2;
     private readonly TextBox[] _delays;
@@ -27,8 +25,6 @@ public partial class CameraSetupDialog : Window
         _cameraDescriptions = cameraDescriptions;
 
         _combos = [CmbCam0, CmbCam1, CmbCam2, CmbCam3];
-        _detMR  = [DetMR0, DetMR1, DetMR2, DetMR3];
-        _detPC  = [DetPC0, DetPC1, DetPC2, DetPC3];
         _trig1  = [Trig1_0, Trig1_1, Trig1_2, Trig1_3];
         _trig2  = [Trig2_0, Trig2_1, Trig2_2, Trig2_3];
         _delays = [TxtDelay0, TxtDelay1, TxtDelay2, TxtDelay3];
@@ -92,11 +88,7 @@ public partial class CameraSetupDialog : Window
             else
                 _combos[s].SelectedIndex = 0;
 
-            // Restore detector
-            if (cfg.Detector == "PatchCore")
-                _detPC[s].IsChecked = true;
-            else
-                _detMR[s].IsChecked = true;
+            // Detector is always MaskRCNN (PatchCore option removed)
 
             // Restore trigger
             if (cfg.TriggerGroup == 2)
@@ -104,8 +96,9 @@ public partial class CameraSetupDialog : Window
             else
                 _trig1[s].IsChecked = true;
 
-            // Restore delay
-            _delays[s].Text = cfg.CaptureDelayMs.ToString();
+            // Restore delay (convert from µs to ms for UI display)
+            int delayMs = (int)(cfg.TriggerDelayUs / 1000.0);
+            _delays[s].Text = delayMs.ToString();
         }
     }
 
@@ -115,13 +108,19 @@ public partial class CameraSetupDialog : Window
         for (int s = 0; s < 4; s++)
         {
             int comboIdx = _combos[s].SelectedIndex;
+            // Parse delay from UI (in ms) and convert to µs for hardware trigger delay
+            int delayMs = int.TryParse(_delays[s].Text.Trim(), out int d) ? d : 50;
             configs[s] = new CameraSlotConfig
             {
                 Slot = s,
                 DeviceIndex = comboIdx > 0 ? comboIdx - 1 : -1,
-                Detector = _detPC[s].IsChecked == true ? "PatchCore" : "MaskRCNN",
+                Detector = "MaskRCNN",
                 TriggerGroup = _trig2[s].IsChecked == true ? 2 : 1,
-                CaptureDelayMs = int.TryParse(_delays[s].Text.Trim(), out int d) ? d : 50,
+                TriggerDelayUs = delayMs * 1000.0,  // Convert ms to µs for camera hardware delay
+                CaptureDelayMs = 0,                  // Retrieve frame immediately after hardware capture
+                // CAM 3/4 (slots 2/3) are side-view cameras with no visible hole — resize only,
+                // no geometric measurement. CAM 1/2 run their respective geo pipelines.
+                SkipGeoMeasurement = (s >= 2),
             };
         }
         return configs;
@@ -133,12 +132,9 @@ public partial class CameraSetupDialog : Window
         int assigned = configs.Count(c => c.DeviceIndex >= 0);
         int t1 = configs.Count(c => c.DeviceIndex >= 0 && c.TriggerGroup == 1);
         int t2 = configs.Count(c => c.DeviceIndex >= 0 && c.TriggerGroup == 2);
-        int mr = configs.Count(c => c.DeviceIndex >= 0 && c.Detector == "MaskRCNN");
-        int pc = configs.Count(c => c.DeviceIndex >= 0 && c.Detector == "PatchCore");
 
         SummaryText.Text = $"{assigned} camera(s) assigned  •  " +
-            $"Coil {_coilAddr1}: {t1} cam(s)  •  Coil {_coilAddr2}: {t2} cam(s)  •  " +
-            $"MaskRCNN: {mr}  •  PatchCore: {pc}";
+            $"Coil {_coilAddr1}: {t1} cam(s)  •  Coil {_coilAddr2}: {t2} cam(s)  •  Detector: MaskRCNN";
 
         BtnStart.IsEnabled = assigned > 0;
     }

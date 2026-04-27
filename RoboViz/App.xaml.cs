@@ -2,6 +2,7 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Threading;
+using Microsoft.Win32;
 
 namespace RoboViz
 {
@@ -17,6 +18,10 @@ namespace RoboViz
             DispatcherUnhandledException += OnDispatcherUnhandledException;
             AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
             TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
+
+            // Auto-start: only re-register if already enabled (preserves user's toggle choice)
+            if (IsAutoStartEnabled())
+                RegisterAutoStart();
         }
 
         private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
@@ -50,6 +55,42 @@ namespace RoboViz
                 File.AppendAllText(logPath, entry);
             }
             catch { }
+        }
+
+        private const string AutoStartKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        private const string AutoStartName = "RoboViz";
+
+        public static void RegisterAutoStart()
+        {
+            try
+            {
+                string exePath = Environment.ProcessPath ?? "";
+                if (string.IsNullOrEmpty(exePath)) return;
+
+                using var key = Registry.CurrentUser.OpenSubKey(AutoStartKey, writable: true);
+                key?.SetValue(AutoStartName, $"\"{exePath}\"");
+            }
+            catch { }
+        }
+
+        public static void RemoveAutoStart()
+        {
+            try
+            {
+                using var key = Registry.CurrentUser.OpenSubKey(AutoStartKey, writable: true);
+                key?.DeleteValue(AutoStartName, throwOnMissingValue: false);
+            }
+            catch { }
+        }
+
+        public static bool IsAutoStartEnabled()
+        {
+            try
+            {
+                using var key = Registry.CurrentUser.OpenSubKey(AutoStartKey, writable: false);
+                return key?.GetValue(AutoStartName) != null;
+            }
+            catch { return false; }
         }
     }
 }

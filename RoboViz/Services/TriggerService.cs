@@ -9,10 +9,10 @@ using System.Threading;
 namespace RoboViz;
 
 /// <summary>
-/// Producer-consumer trigger pipeline.
-///   Producer: polls two Modbus trigger coils, edge-detects LOW?HIGH.
-///   Consumer: captures camera frames (per-camera delays), runs inference, posts results.
-///   Supports flexible camera-to-trigger mapping via CameraSlotConfig[].
+/// Hardware-trigger producer-consumer pipeline.
+///   Producer: one sentinel waiter per trigger group blocks on camera frame arrival.
+///   Consumer: captures grouped frames, runs inference, posts results, and schedules output coils.
+///   Supports flexible camera-to-trigger mapping via <see cref="CameraSlotConfig"/>.
 /// </summary>
 public class TriggerService : IDisposable
 {
@@ -22,17 +22,13 @@ public class TriggerService : IDisposable
     private readonly TriggerConfig _config;
     private readonly CameraSlotConfig[] _cameraSlots;
     private readonly Action<TriggerResultEvent> _onResult;
-    private readonly Action<TriggerPollStatus>? _onPollStatus;
     private readonly bool _ownsModbus;
 
-    private BlockingCollection<TriggerEvent> _queue = new(boundedCapacity: 16);
-    private Thread? _producerThread;
-    private Thread? _consumerThread;
+    // One queue + one consumer per trigger group, so groups process in parallel.
+    private readonly Dictionary<int, BlockingCollection<TriggerEvent>> _queues = [];
+    private Thread?[] _producerThreads = [];
+    private Thread?[] _consumerThreads = [];
     private volatile bool _running;
-
-    // Edge detection: only trigger on LOW?HIGH transition
-    private bool _prevTrigger1;
-    private bool _prevTrigger2;
 
     public bool IsRunning => _running;
 
@@ -60,7 +56,7 @@ public class TriggerService : IDisposable
         _config = config;
         _cameraSlots = cameraSlots;
         _onResult = onResult;
-        _onPollStatus = onPollStatus;
+        _ = onPollStatus; // Poll callback retained in the public signature for backward compatibility.
         _ownsModbus = ownsModbus;
 
         string camStatus = cameras == null ? "NULL" : (cameras.IsStreaming ? "streaming" : "initialized");
@@ -75,15 +71,57 @@ public class TriggerService : IDisposable
     {
         if (_running) return;
         _running = true;
-        _prevTrigger1 = false;
-        _prevTrigger2 = false;
 
-        _producerThread = new Thread(ProducerLoop) { IsBackground = true, Name = "TriggerProducer" };
-        _consumerThread = new Thread(ConsumerLoop) { IsBackground = true, Name = "TriggerConsumer" };
-        _producerThread.Start();
-        _consumerThread.Start();
+        if (_cameras == null)
+        {
+            Debug.WriteLine("[TriggerService] No cameras — trigger events will be empty.");
+            MaskRCNNDetector.LogDiag("[Trigger] Started (no cameras).");
+            return;
+        }
 
-        MaskRCNNDetector.LogDiag("[Trigger] Producer-consumer started.");
+        // One sentinel waiter + one consumer per trigger group (parallel pipelines).
+        var groups = _cameraSlots
+            .Where(c => c.DeviceIndex >= 0)
+            .Select(c => c.TriggerGroup)
+            .Distinct()
+            .OrderBy(g => g)
+            .ToArray();
+
+        _producerThreads = new Thread[groups.Length];
+        _consumerThreads = new Thread[groups.Length];
+        for (int i = 0; i < groups.Length; i++)
+        {
+            int group = groups[i];
+            var queue = new BlockingCollection<TriggerEvent>(boundedCapacity: 16);
+            _queues[group] = queue;
+
+            _consumerThreads[i] = new Thread(() => ConsumerLoop(queue))
+            {
+                IsBackground = true,
+                Name = $"TriggerConsumer_G{group}"
+            };
+            _consumerThreads[i].Start();
+
+            _producerThreads[i] = new Thread(() => SentinelWaiterLoop(group))
+            {
+                IsBackground = true,
+                Name = $"TriggerProducer_G{group}"
+            };
+            _producerThreads[i].Start();
+            Debug.WriteLine($"[Trigger] Producer + consumer started for trigger group {group}.");
+        }
+
+        MaskRCNNDetector.LogDiag($"[Trigger] Started: {groups.Length} parallel pipeline(s) [hardware trigger mode].");
+    }
+
+    /// <summary>
+    /// Redirect to Start() — producer-consumer now handles camera hardware triggers.
+    /// Kept for backward compatibility.
+    /// </summary>
+    public void StartHardwareMode()
+    {
+        Debug.WriteLine("[Trigger] StartHardwareMode() ? redirecting to Start().");
+        Start();
     }
 
     public void Stop()
@@ -91,151 +129,86 @@ public class TriggerService : IDisposable
         if (!_running) return;
         _running = false;
 
-        try { _queue.CompleteAdding(); } catch { }
-
-        // Join on a background thread to avoid freezing the UI.
-        // The producer may be stuck in a 1-second Modbus read timeout.
-        var producer = _producerThread;
-        var consumer = _consumerThread;
-        _producerThread = null;
-        _consumerThread = null;
-
-        if (producer != null || consumer != null)
+        foreach (var q in _queues.Values)
         {
-            _ = Task.Run(() =>
-            {
-                producer?.Join(3000);
-                consumer?.Join(3000);
-                Debug.WriteLine("[Trigger] Background threads joined.");
-            });
+            try { q.CompleteAdding(); } catch { }
         }
 
-        MaskRCNNDetector.LogDiag("[Trigger] Producer-consumer stopped.");
+        var producers = _producerThreads;
+        var consumers = _consumerThreads;
+        _producerThreads = [];
+        _consumerThreads = [];
+
+        _ = Task.Run(() =>
+        {
+            foreach (var p in producers)
+                p?.Join(3000);
+            foreach (var c in consumers)
+                c?.Join(3000);
+            Debug.WriteLine("[Trigger] All background threads joined.");
+        });
+
+        MaskRCNNDetector.LogDiag("[Trigger] Stopped.");
     }
 
-    // ?? Producer ??????????????????????????????????????????????
+    // ?? Sentinel Waiter (Producer) ??????????????????????????????????????????????????????????????
 
-    private void ProducerLoop()
+    /// <summary>
+    /// One thread per trigger group. Blocks on WaitForNewFrame for the sentinel camera.
+    /// When the 24 V signal arrives on the camera's opto-in, the camera captures a frame;
+    /// this thread unblocks, records the arrival timestamp, and enqueues a TriggerEvent.
+    /// </summary>
+    private void SentinelWaiterLoop(int triggerGroup)
     {
-        ushort addrT1 = _config.TriggerCoil_Cam13;
-        ushort addrT2 = _config.TriggerCoil_Cam24;
+        var sentinel = _cameraSlots
+            .Where(c => c.TriggerGroup == triggerGroup && c.DeviceIndex >= 0)
+            .OrderBy(c => c.Slot)
+            .FirstOrDefault();
 
-        Debug.WriteLine($"[Trigger] Producer started: T1 coil={addrT1}, T2 coil={addrT2}, poll={_config.PollIntervalMs}ms");
+        if (sentinel == null)
+        {
+            Debug.WriteLine($"[Trigger] Group {triggerGroup}: no cameras assigned, waiter exiting.");
+            return;
+        }
 
-        int consecutiveFailures = 0;
-        const int FlushThreshold = 5;     // flush + rebuild transport
-        const int ReconnectThreshold = 15; // full close + reopen COM port
+        var triggerType = triggerGroup == 1 ? TriggerType.Trigger1 : TriggerType.Trigger2;
+        Debug.WriteLine($"[Trigger] Group {triggerGroup} sentinel: CAM {sentinel.Slot + 1} (device {sentinel.DeviceIndex})");
 
         while (_running)
         {
+            // BLOCKING wait — returns when camera hardware trigger fires and a frame arrives.
+            // 2 s internal timeout used only for clean shutdown; no spurious processing on timeout.
+            var frame = _cameras?.WaitForNewFrame(sentinel.Slot, timeoutMs: 2000);
+
+            if (frame == null) continue; // timeout — check _running and wait again
+
+            frame.Dispose(); // full frames grabbed later in ProcessTrigger
+
+            var arrivalTime = DateTime.Now;
+            Debug.WriteLine($"[Profiling] Group {triggerGroup} CAM {sentinel.Slot + 1}: frame arrived {arrivalTime:HH:mm:ss.fff}");
+
             try
             {
-                var bitsT1 = _modbus.ReadCoils(addrT1, 1);
-                var bitsT2 = _modbus.ReadCoils(addrT2, 1);
-
-                if (bitsT1 == null || bitsT2 == null)
+                if (_queues.TryGetValue(triggerGroup, out var queue))
                 {
-                    consecutiveFailures++;
-
-                    if (consecutiveFailures <= 3 || consecutiveFailures % 20 == 0)
-                        Debug.WriteLine($"[Trigger] ReadCoils FAILED (x{consecutiveFailures}): {_modbus.LastError}");
-
-                    // Stage 1: flush buffers + rebuild NModbus transport
-                    if (consecutiveFailures == FlushThreshold)
-                    {
-                        Debug.WriteLine($"[Trigger] {consecutiveFailures} failures — flushing bus...");
-                        _onPollStatus?.Invoke(new TriggerPollStatus(
-                            false, false, false, consecutiveFailures, "Flushing bus..."));
-                        if (_modbus.TryRecover())
-                        {
-                            Debug.WriteLine("[Trigger] Bus flush succeeded, resuming polls.");
-                            _prevTrigger1 = false;
-                            _prevTrigger2 = false;
-                            consecutiveFailures = 0;
-                            Thread.Sleep(_config.PollIntervalMs);
-                            continue;
-                        }
-                    }
-
-                    // Stage 2: full serial port close + reopen
-                    if (consecutiveFailures >= ReconnectThreshold &&
-                        consecutiveFailures % ReconnectThreshold == 0)
-                    {
-                        Debug.WriteLine($"[Trigger] {consecutiveFailures} failures — full reconnect...");
-                        _onPollStatus?.Invoke(new TriggerPollStatus(
-                            false, false, false, consecutiveFailures, "Reconnecting COM port..."));
-                        if (_modbus.TryReconnect())
-                        {
-                            Debug.WriteLine("[Trigger] Full reconnect succeeded, resuming polls.");
-                            _prevTrigger1 = false;
-                            _prevTrigger2 = false;
-                            consecutiveFailures = 0;
-                            Thread.Sleep(_config.PollIntervalMs);
-                            continue;
-                        }
-                    }
-
-                    // Periodic flush retry between reconnect attempts
-                    if (consecutiveFailures > FlushThreshold &&
-                        consecutiveFailures < ReconnectThreshold &&
-                        consecutiveFailures % FlushThreshold == 0)
-                    {
-                        _modbus.TryRecover();
-                    }
-
-                    _onPollStatus?.Invoke(new TriggerPollStatus(
-                        false, false, false, consecutiveFailures, _modbus.LastError));
-
-                    int backoff = Math.Min(_config.PollIntervalMs * 5, 2000);
-                    Thread.Sleep(consecutiveFailures <= 3 ? _config.PollIntervalMs : backoff);
-                    continue;
+                    queue.Add(new TriggerEvent(triggerType, arrivalTime));
+                    Debug.WriteLine($"[Profiling] Group {triggerGroup}: TriggerEvent queued at {DateTime.Now:HH:mm:ss.fff}");
                 }
-
-                bool t1Now = bitsT1[0];
-                bool t2Now = bitsT2[0];
-
-                if (consecutiveFailures > 0)
-                {
-                    Debug.WriteLine($"[Trigger] Read recovered after {consecutiveFailures} failures.");
-                    consecutiveFailures = 0;
-                }
-
-                _onPollStatus?.Invoke(new TriggerPollStatus(
-                    true, t1Now, t2Now, 0, null));
-
-                // Edge detect: LOW ? HIGH
-                if (t1Now && !_prevTrigger1)
-                {
-                    _queue.TryAdd(new TriggerEvent(TriggerType.Trigger1, DateTime.UtcNow));
-                    Debug.WriteLine($"[Trigger] >>> TRIGGER 1 HIGH at {DateTime.Now:HH:mm:ss.fff}");
-                    MaskRCNNDetector.LogDiag("[Trigger] Trigger 1 detected.");
-                }
-
-                if (t2Now && !_prevTrigger2)
-                {
-                    _queue.TryAdd(new TriggerEvent(TriggerType.Trigger2, DateTime.UtcNow));
-                    Debug.WriteLine($"[Trigger] >>> TRIGGER 2 HIGH at {DateTime.Now:HH:mm:ss.fff}");
-                    MaskRCNNDetector.LogDiag("[Trigger] Trigger 2 detected.");
-                }
-
-                _prevTrigger1 = t1Now;
-                _prevTrigger2 = t2Now;
             }
-            catch (Exception ex)
+            catch (InvalidOperationException)
             {
-                Debug.WriteLine($"[Trigger] Producer exception: {ex.Message}");
-                MaskRCNNDetector.LogDiag($"[Trigger] Producer error: {ex.Message}");
+                break; // queue completed — shutting down
             }
-
-            Thread.Sleep(_config.PollIntervalMs);
         }
+
+        Debug.WriteLine($"[Trigger] Sentinel waiter for group {triggerGroup} stopped.");
     }
 
-    // ?? Consumer ??????????????????????????????????????????????
+    // ?? Consumer ????????????????????????????????????????????????????????????????????????????????
 
-    private void ConsumerLoop()
+    private void ConsumerLoop(BlockingCollection<TriggerEvent> queue)
     {
-        foreach (var trigger in _queue.GetConsumingEnumerable())
+        foreach (var trigger in queue.GetConsumingEnumerable())
         {
             if (!_running) break;
 
@@ -252,8 +225,12 @@ public class TriggerService : IDisposable
 
     private void ProcessTrigger(TriggerEvent trigger)
     {
+        var tDequeue = DateTime.Now;
+        double queueLatencyMs = (tDequeue - trigger.Timestamp).TotalMilliseconds;
         int triggerGroup = trigger.Type == TriggerType.Trigger1 ? 1 : 2;
         string label = $"Trigger {triggerGroup}";
+
+        Debug.WriteLine($"[Profiling] ???? {label} dequeued {tDequeue:HH:mm:ss.fff}  (queue latency: {queueLatencyMs:F1} ms) ????");
 
         // Find camera slots assigned to this trigger group
         var slotsForTrigger = _cameraSlots
@@ -263,7 +240,7 @@ public class TriggerService : IDisposable
 
         if (slotsForTrigger.Length == 0)
         {
-            Debug.WriteLine($"[Trigger] {label}: no cameras assigned.");
+        Debug.WriteLine($"[Trigger] {label}: no cameras assigned.");
             _onResult(new TriggerResultEvent
             {
                 Type = trigger.Type,
@@ -296,47 +273,42 @@ public class TriggerService : IDisposable
             return;
         }
 
-        // On-demand camera start
-        if (!_cameras.IsStreaming)
+        if (!_cameras.IsStreaming || !_cameras.IsHardwareTrigger)
         {
-            Debug.WriteLine($"[Trigger] {label} — cameras not streaming, starting now...");
-            try
+            string reason = !_cameras.IsStreaming
+                ? "cameras are not armed"
+                : "cameras are not in hardware-trigger mode";
+            Debug.WriteLine($"[Trigger] {label} — {reason}, skipping inference.");
+            _onResult(new TriggerResultEvent
             {
-                _cameras.StartStreaming();
-                Thread.Sleep(500);
-                Debug.WriteLine($"[Trigger] {label} — cameras started and warmed up.");
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[Trigger] {label} — camera start failed: {ex.Message}");
-                _onResult(new TriggerResultEvent
-                {
-                    Type = trigger.Type,
-                    Results = [],
-                    Slots = [],
-                    BatchMs = 0,
-                    ModbusWriteOk = false,
-                    ModbusError = $"Camera start failed: {ex.Message}",
-                });
-                return;
-            }
+                Type = trigger.Type,
+                Results = [],
+                Slots = [],
+                BatchMs = 0,
+                ModbusWriteOk = false,
+                ModbusError = $"Not ready: {reason}",
+            });
+            return;
         }
 
-        // Capture frames with per-camera delays (sorted by delay ascending)
+        // Capture latest hardware-triggered frames with per-camera delays (sorted ascending).
         var triggerTime = trigger.Timestamp;
+        var tCaptureStart = DateTime.Now;
         var frames = new Bitmap?[slotsForTrigger.Length];
+        var frameCaptureTimes = new long[slotsForTrigger.Length];
 
         for (int i = 0; i < slotsForTrigger.Length; i++)
         {
             var slotCfg = slotsForTrigger[i];
 
             // Wait until this camera's delay has elapsed since trigger
-            int elapsed = (int)(DateTime.UtcNow - triggerTime).TotalMilliseconds;
+            int elapsed = (int)(DateTime.Now - triggerTime).TotalMilliseconds;
             int remaining = slotCfg.CaptureDelayMs - elapsed;
             if (remaining > 0)
                 Thread.Sleep(remaining);
 
             // Grab latest frame with retry
+            var swCapture = Stopwatch.StartNew();
             const int maxRetries = 10;
             const int retryDelayMs = 200;
             for (int attempt = 0; attempt < maxRetries; attempt++)
@@ -346,15 +318,29 @@ public class TriggerService : IDisposable
                 if (attempt < maxRetries - 1)
                     Thread.Sleep(retryDelayMs);
             }
+            frameCaptureTimes[i] = swCapture.ElapsedMilliseconds;
 
-            Debug.WriteLine($"[Trigger] CAM {slotCfg.Slot + 1} (delay {slotCfg.CaptureDelayMs}ms): {(frames[i] != null ? "OK" : "NULL")}");
+            Debug.WriteLine($"[Trigger] CAM {slotCfg.Slot + 1} (delay {slotCfg.CaptureDelayMs}ms): {(frames[i] != null ? "OK" : "NULL")} [{frameCaptureTimes[i]}ms]");
         }
 
+        var totalCaptureMs = (DateTime.Now - tCaptureStart).TotalMilliseconds;
+        Debug.WriteLine($"[Profiling] Frame capture done: {totalCaptureMs:F1}ms | per-cam: [{string.Join(", ", frameCaptureTimes.Select(t => $"{t}ms"))}]");
+
         // Run inference on captured frames
+        // NOTE: Sequential execution means total time = sum of all inspection times.
+        // CAM 2 geometry is slower than CAM 1 because BuildMaskCam2 uses:
+        //   - Ratio normalization (floating-point division per pixel)
+        //   - GaussianBlur 21×21 kernel
+        //   - AdaptiveThreshold 151×151 block (VERY expensive: ~23K pixels per output pixel)
+        //   - Morphology: 3× Close(35×35) + 1× Open(15×15) vs CAM 1's 2× Close(7×7) + 1× Open(7×7)
+        //   - Connected components with circularity scoring + hole filling
+        // Typical CAM 1 geo: ~100-120ms | CAM 2 geo: ~1400-1600ms
+        var tInspStart = DateTime.Now;
         var resultList = new System.Collections.Generic.List<InspectionResult>();
         var frameList = new System.Collections.Generic.List<Bitmap>();
         var slotList = new System.Collections.Generic.List<int>();
         var sw = Stopwatch.StartNew();
+        var perCamTimes = new System.Collections.Generic.List<long>();
 
         for (int i = 0; i < slotsForTrigger.Length; i++)
         {
@@ -362,23 +348,27 @@ public class TriggerService : IDisposable
             var slotCfg = slotsForTrigger[i];
 
             Debug.WriteLine($"[Trigger] CAM {slotCfg.Slot + 1} frame: {frames[i]!.Width}x{frames[i]!.Height} px, detector={slotCfg.Detector}");
-            bool skipGeo = slotCfg.Detector != "MaskRCNN";
+            var swInspect = Stopwatch.StartNew();
+            bool skipGeo = slotCfg.SkipGeoMeasurement;
             var result = _inspection.InspectMaskRCNN(frames[i]!, triggerGroup, skipGeo, slot: slotCfg.Slot);
+            long inspectMs = swInspect.ElapsedMilliseconds;
+            perCamTimes.Add(inspectMs);
             resultList.Add(result);
             frameList.Add(frames[i]!);
             slotList.Add(slotCfg.Slot);
 
-            Debug.WriteLine($"[Trigger] CAM {slotCfg.Slot + 1} [{slotCfg.Detector}] => {result.Verdict} | " +
-                $"total={result.TotalMs}ms geo={result.GeoMs}ms infer={result.InferenceMs}ms" +
-                (slotCfg.Detector == "MaskRCNN"
-                    ? $" | defect={result.HasDefect} topScore={result.TopScore:F3}"
-                    : $" | anomalyScore={result.AnomalyScore:F3} threshold={result.AnomalyThreshold:F3}") +
+            Debug.WriteLine($"[Trigger] CAM {slotCfg.Slot + 1} => {result.Verdict} | " +
+                $"total={result.TotalMs}ms geo={result.GeoMs}ms infer={result.InferenceMs}ms (wall: {inspectMs}ms)" +
+                $" | defect={result.HasDefect} topScore={result.TopScore:F3}" +
                 (result.FailReasons.Count > 0 ? $" | reasons=[{string.Join(", ", result.FailReasons)}]" : "") +
                 (result.ErrorMessage != null ? $" | ERROR: {result.ErrorMessage}" : ""));
         }
 
         var results = resultList.ToArray();
         long batchMs = sw.ElapsedMilliseconds;
+        var totalInspMs = (DateTime.Now - tInspStart).TotalMilliseconds;
+        Debug.WriteLine($"[Profiling] Inspection done: {totalInspMs:F1}ms (batch timer: {batchMs}ms) | per-cam: [{string.Join(", ", perCamTimes.Select(t => $"{t}ms"))}]");
+        Debug.WriteLine($"[Profiling] Sequential sum: {perCamTimes.Sum()}ms | parallel potential: max({string.Join(", ", perCamTimes)}) = {(perCamTimes.Count > 0 ? perCamTimes.Max() : 0)}ms (speedup: {(perCamTimes.Sum() > 0 ? (double)perCamTimes.Sum() / (perCamTimes.Count > 0 ? perCamTimes.Max() : 1) : 0):F1}x)");
         Debug.WriteLine($"[Trigger] {label} batch complete: {batchMs}ms | verdicts=[{string.Join(", ", results.Select(r => r.Verdict))}]");
 
         // Dispose frames not used as overlay
@@ -388,18 +378,27 @@ public class TriggerService : IDisposable
                 frameList[i].Dispose();
         }
 
-        // Write rejection output coils based on verdicts
-        var (modbusOk, modbusError, coilsActivated) = WriteRejectionCoils(triggerGroup, results, slotList);
-
+        // Send results to UI immediately — don't block the consumer on Modbus coil writes
         _onResult(new TriggerResultEvent
         {
             Type = trigger.Type,
             Results = results,
             Slots = [.. slotList],
             BatchMs = batchMs,
-            ModbusWriteOk = modbusOk,
-            ModbusError = modbusError,
-            CoilsActivated = coilsActivated,
+            ModbusWriteOk = true,
+            ModbusError = null,
+            CoilsActivated = null,
+        });
+
+        // Write rejection output coils fire-and-forget so consumer is never blocked
+        // by Modbus timeouts (~1.5 s per timeout would starve the trigger queue)
+        int capturedGroup = triggerGroup;
+        var capturedResults = results;
+        var capturedSlots = slotList.ToList();
+        _ = Task.Run(() =>
+        {
+            var (ok, err, coils) = WriteRejectionCoils(capturedGroup, capturedResults, capturedSlots);
+            Debug.WriteLine($"[Trigger] Coils: group={capturedGroup}, activated=[{coils ?? "none"}], ok={ok}, err={err ?? "no coil needed"}");
         });
     }
 
@@ -538,7 +537,11 @@ public class TriggerService : IDisposable
     {
         Stop();
 
-        try { _queue.Dispose(); } catch { }
+        foreach (var q in _queues.Values)
+        {
+            try { q.Dispose(); } catch { }
+        }
+        _queues.Clear();
 
         if (_ownsModbus)
         {

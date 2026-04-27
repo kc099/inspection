@@ -19,6 +19,13 @@ public class TriggerConfig
     public int PollIntervalMs { get; set; } = 200;
 
     /// <summary>
+    /// Legacy mode selector kept for configuration compatibility.
+    /// "software": Modbus polling detects trigger, then captures frames.
+    /// "hardware": sensor wired directly to camera trigger input, frames arrive automatically.
+    /// </summary>
+    public string CameraTriggerMode { get; set; } = "software";
+
+    /// <summary>
     /// Rejection output coil configuration (addresses, delays, conflict priority).
     /// </summary>
     public OutputCoilConfig OutputCoils { get; set; } = new();
@@ -26,12 +33,18 @@ public class TriggerConfig
     /// <summary>
     /// Per-camera slot configuration. Default: 3 cameras on Trigger 1, 1 on Trigger 2.
     /// </summary>
+    /// <summary>
+    /// Per-camera slot configuration. Default mapping:
+    ///   CAM 1 (slot 0)              ? Trigger 1, full geo (cam1 OpenCV pipeline) + MaskRCNN
+    ///   CAM 2 (slot 1)              ? Trigger 2, YOLO-bbox geo + MaskRCNN
+    ///   CAM 3, CAM 4 (slots 2, 3)   ? Trigger 2, NO geo (resize only) + MaskRCNN
+    /// </summary>
     public CameraSlotConfig[] CameraSlots { get; set; } =
     [
-        new() { Slot = 0, TriggerGroup = 1, Detector = "MaskRCNN",  CaptureDelayMs = 50 },
-        new() { Slot = 1, TriggerGroup = 1, Detector = "MaskRCNN",  CaptureDelayMs = 50 },
-        new() { Slot = 2, TriggerGroup = 1, Detector = "PatchCore", CaptureDelayMs = 50 },
-        new() { Slot = 3, TriggerGroup = 2, Detector = "PatchCore", CaptureDelayMs = 50 },
+        new() { Slot = 0, TriggerGroup = 1, Detector = "MaskRCNN", CaptureDelayMs = 50, SkipGeoMeasurement = false },
+        new() { Slot = 1, TriggerGroup = 2, Detector = "MaskRCNN", CaptureDelayMs = 50, SkipGeoMeasurement = false },
+        new() { Slot = 2, TriggerGroup = 2, Detector = "MaskRCNN", CaptureDelayMs = 50, SkipGeoMeasurement = true  },
+        new() { Slot = 3, TriggerGroup = 2, Detector = "MaskRCNN", CaptureDelayMs = 50, SkipGeoMeasurement = true  },
     ];
 
     /// <summary>Coil address for trigger group 1.</summary>
@@ -109,7 +122,8 @@ public class OutputCoilConfig
 public enum TriggerType { Trigger1, Trigger2 }
 
 /// <summary>
-/// A trigger event produced by the polling thread.
+/// A trigger event produced by the active trigger source.
+/// In the current hardware-trigger pipeline it is queued by a sentinel camera waiter thread.
 /// </summary>
 public readonly record struct TriggerEvent(TriggerType Type, DateTime Timestamp);
 

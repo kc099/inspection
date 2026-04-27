@@ -161,7 +161,7 @@
                 <Border x:Name="CamBorder2" Grid.Row="1" Grid.Column="0" Style="{StaticResource ImageFrame}">
                     <Grid>
                         <Image x:Name="ImageDisplay2" Stretch="Uniform" Margin="6"/>
-                    <TextBlock x:Name="CamLabel2" Text="CAM 3 [PatchCore]" FontFamily="{StaticResource Montserrat}"
+                    <TextBlock x:Name="CamLabel2" Text="CAM 3 [MaskRCNN]" FontFamily="{StaticResource Montserrat}"
                                    FontSize="10" FontWeight="Bold" Foreground="#FF505058"
                                    HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10,8"/>
                         <TextBlock x:Name="VerdictLabel2" Text=""
@@ -179,7 +179,7 @@
                 <Border x:Name="CamBorder3" Grid.Row="1" Grid.Column="1" Style="{StaticResource ImageFrame}">
                     <Grid>
                         <Image x:Name="ImageDisplay3" Stretch="Uniform" Margin="6"/>
-                    <TextBlock x:Name="CamLabel3" Text="CAM 4 [PatchCore]" FontFamily="{StaticResource Montserrat}"
+                    <TextBlock x:Name="CamLabel3" Text="CAM 4 [MaskRCNN]" FontFamily="{StaticResource Montserrat}"
                                    FontSize="10" FontWeight="Bold" Foreground="#FF505058"
                                    HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10,8"/>
                         <TextBlock x:Name="VerdictLabel3" Text=""
@@ -317,23 +317,27 @@
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="160"/>
                                     <ColumnDefinition Width="80"/>
-                                    <ColumnDefinition Width="120"/>
-                                    <ColumnDefinition Width="120"/>
+                                    <ColumnDefinition Width="80"/>
+                                    <ColumnDefinition Width="110"/>
+                                    <ColumnDefinition Width="110"/>
                                     <ColumnDefinition Width="60"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0" Text="Metric"
                                            FontFamily="{StaticResource Montserrat}"
                                            Foreground="#FF505058" FontSize="11" FontWeight="Bold"/>
-                                <TextBlock Grid.Column="1" Text="Value"
-                                           FontFamily="{StaticResource Montserrat}"
-                                           Foreground="#FF505058" FontSize="11" FontWeight="Bold"/>
-                                <TextBlock Grid.Column="2" Text="Min (3001/3002)"
+                                <TextBlock Grid.Column="1" Text="Value 1 (CAM1)"
                                            FontFamily="{StaticResource Montserrat}"
                                            Foreground="#FF505058" FontSize="10" FontWeight="Bold"/>
-                                <TextBlock Grid.Column="3" Text="Max (3001/3002)"
+                                <TextBlock Grid.Column="2" Text="Value 2 (CAM2)"
                                            FontFamily="{StaticResource Montserrat}"
                                            Foreground="#FF505058" FontSize="10" FontWeight="Bold"/>
-                                <TextBlock Grid.Column="4" Text="Status"
+                                <TextBlock Grid.Column="3" Text="Min (3001/3002)"
+                                           FontFamily="{StaticResource Montserrat}"
+                                           Foreground="#FF505058" FontSize="10" FontWeight="Bold"/>
+                                <TextBlock Grid.Column="4" Text="Max (3001/3002)"
+                                           FontFamily="{StaticResource Montserrat}"
+                                           Foreground="#FF505058" FontSize="10" FontWeight="Bold"/>
+                                <TextBlock Grid.Column="5" Text="Status"
                                            FontFamily="{StaticResource Montserrat}"
                                            Foreground="#FF505058" FontSize="11" FontWeight="Bold"/>
                             </Grid>
@@ -345,8 +349,9 @@
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="160"/>
                                                 <ColumnDefinition Width="80"/>
-                                                <ColumnDefinition Width="120"/>
-                                                <ColumnDefinition Width="120"/>
+                                                <ColumnDefinition Width="80"/>
+                                                <ColumnDefinition Width="110"/>
+                                                <ColumnDefinition Width="110"/>
                                                 <ColumnDefinition Width="60"/>
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Grid.Column="0" Text="{Binding Label}"
@@ -356,13 +361,17 @@
                                                        FontFamily="{StaticResource ShareTechMono}"
                                                        Foreground="{Binding ValueColor}" FontSize="13"
                                                        FontWeight="Bold"/>
-                                            <TextBlock Grid.Column="2" Text="{Binding LoText}"
+                                            <TextBlock Grid.Column="2" Text="{Binding Value2Text}"
+                                                       FontFamily="{StaticResource ShareTechMono}"
+                                                       Foreground="{Binding Value2Color}" FontSize="13"
+                                                       FontWeight="Bold"/>
+                                            <TextBlock Grid.Column="3" Text="{Binding LoText}"
                                                        FontFamily="{StaticResource ShareTechMono}"
                                                        Foreground="#FF6E6E76" FontSize="11"/>
-                                            <TextBlock Grid.Column="3" Text="{Binding HiText}"
+                                            <TextBlock Grid.Column="4" Text="{Binding HiText}"
                                                        FontFamily="{StaticResource ShareTechMono}"
                                                        Foreground="#FF6E6E76" FontSize="11"/>
-                                            <TextBlock Grid.Column="4" Text="{Binding StatusText}"
+                                            <TextBlock Grid.Column="5" Text="{Binding StatusText}"
                                                        FontFamily="{StaticResource ShareTechMono}"
                                                        Foreground="{Binding StatusColor}" FontSize="13"
                                                        FontWeight="Bold"/>
@@ -509,6 +518,21 @@
                                        FontFamily="{StaticResource ShareTechMono}"
                                        Foreground="#FF505058" FontSize="10"
                                        Margin="0,4,0,0" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- App Settings -->
+                    <Border Background="#FF18181E" CornerRadius="10" Padding="14,12" Margin="0,0,0,14"
+                            BorderBrush="#FF2A2A34" BorderThickness="1">
+                        <StackPanel>
+                            <TextBlock Text="APP SETTINGS"
+                                       FontFamily="{StaticResource Montserrat}"
+                                       Foreground="#FF6E6E76" FontSize="11" FontWeight="Bold"
+                                       Margin="0,0,0,8"/>
+                            <CheckBox x:Name="ChkAutoStart" Content="Start on Windows login"
+                                      FontFamily="{StaticResource Montserrat}"
+                                      Foreground="#FFC8C8CD" FontSize="12"
+                                      Checked="ChkAutoStart_Changed" Unchecked="ChkAutoStart_Changed"/>
                         </StackPanel>
                     </Border>
                 </StackPanel>

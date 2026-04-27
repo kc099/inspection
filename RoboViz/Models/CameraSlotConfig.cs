@@ -16,8 +16,14 @@ public class CameraSlotConfig
     /// <summary>Physical device index from camera enumeration. -1 = not assigned.</summary>
     public int DeviceIndex { get; set; } = -1;
 
-    /// <summary>"MaskRCNN" or "PatchCore".</summary>
+    /// <summary>Detector label for display (always "MaskRCNN").</summary>
     public string Detector { get; set; } = "MaskRCNN";
+
+    /// <summary>
+    /// When true, skip geometric measurement and go straight to MaskRCNN inference.
+    /// Set for cameras that have no visible hole (e.g. slot 2 and 3 side-view cameras).
+    /// </summary>
+    public bool SkipGeoMeasurement { get; set; } = false;
 
     /// <summary>Trigger group (1 or 2). Cameras on the same group fire together.</summary>
     public int TriggerGroup { get; set; } = 1;
@@ -28,6 +34,17 @@ public class CameraSlotConfig
     /// </summary>
     public int CaptureDelayMs { get; set; } = 50;
 
+    /// <summary>
+    /// Hardware trigger source line on the camera (e.g. "Line0", "Line1").
+    /// Used only when CameraTriggerMode is "hardware".
+    /// </summary>
+    public string TriggerSource { get; set; } = "Line0";
+
+    /// <summary>
+    /// Delay in microseconds applied inside the camera after the hardware trigger pulse
+    /// before the exposure begins. Default 50 µs.
+    /// </summary>
+    public double TriggerDelayUs { get; set; } = 0.0;
     private static readonly string DefaultPath =
         Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets", "camera_slots.json");
 

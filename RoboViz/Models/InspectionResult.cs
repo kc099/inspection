@@ -8,7 +8,6 @@ namespace RoboViz;
 /// </summary>
 public class InspectionResult
 {
-    public string DetectorType { get; set; } = "MaskRCNN";
     public string Verdict { get; set; } = string.Empty;
     public string? ErrorMessage { get; set; }
     public List<string> FailReasons { get; set; } = [];
@@ -22,10 +21,6 @@ public class InspectionResult
     public List<Detection> Detections { get; set; } = [];
     public float TopScore { get; set; }
     public List<int> MaskPixelCounts { get; set; } = [];
-
-    // PatchCore specific
-    public float AnomalyScore { get; set; }
-    public float AnomalyThreshold { get; set; }
 
     // Timing
     public long TotalMs { get; set; }
