@@ -18,7 +18,9 @@
     "Cam234_RejectDelayMs": 100,
     "Cam2_ReworkDelayMs": 100,
     "CoilOnDurationMs": 200,
-    "ConflictPriority": "reject"
+    "ConflictPriority": "reject",
+    "ReadyCoil_T1": 4010,
+    "ReadyCoil_T2": 4011
   }
 }
 	

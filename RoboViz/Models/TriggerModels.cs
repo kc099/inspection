@@ -114,6 +114,21 @@ public class OutputCoilConfig
     /// "reject" (default): only reject coil fires. "rework": both fire.
     /// </summary>
     public string ConflictPriority { get; set; } = "reject";
+
+    // ?? Per-trigger READY handshake coils ??????????????????????????????????
+    // Latched (not pulsed): set to 0 at the start of ProcessTrigger for that
+    // group, set back to 1 once the batch is done. The PLC ANDs both coils
+    // to drive the operator buzzer / "place next part" lamp.
+    // Set the coil address to 0 to disable that group's handshake.
+
+    /// <summary>Coil address: TriggerGroup 1 ready-for-next-trigger handshake.</summary>
+    public ushort ReadyCoil_T1 { get; set; } = 4010;
+    /// <summary>Coil address: TriggerGroup 2 ready-for-next-trigger handshake.</summary>
+    public ushort ReadyCoil_T2 { get; set; } = 4011;
+
+    /// <summary>Convenience accessor: ready coil for a given trigger group.</summary>
+    public ushort GetReadyCoil(int triggerGroup) =>
+        triggerGroup == 1 ? ReadyCoil_T1 : ReadyCoil_T2;
 }
 
 /// <summary>

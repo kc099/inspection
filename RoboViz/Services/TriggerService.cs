@@ -109,6 +109,12 @@ public class TriggerService : IDisposable
             };
             _producerThreads[i].Start();
             Debug.WriteLine($"[Trigger] Producer + consumer started for trigger group {group}.");
+
+            // Initial state of the per-group READY handshake = 1 (system is idle
+            // and willing to accept the first trigger). The coil drops to 0 the
+            // moment ProcessTrigger starts work for this group, and goes back to
+            // 1 when the batch is done.
+            SetReady(group, true);
         }
 
         MaskRCNNDetector.LogDiag($"[Trigger] Started: {groups.Length} parallel pipeline(s) [hardware trigger mode].");
@@ -139,6 +145,14 @@ public class TriggerService : IDisposable
         _producerThreads = [];
         _consumerThreads = [];
 
+        // Drop READY for all groups that we drove high — system is no longer
+        // accepting triggers. Errors are swallowed: we may be tearing down
+        // because Modbus is already dead.
+        foreach (var group in _queues.Keys)
+        {
+            try { SetReady(group, false); } catch { }
+        }
+
         _ = Task.Run(() =>
         {
             foreach (var p in producers)
@@ -149,6 +163,32 @@ public class TriggerService : IDisposable
         });
 
         MaskRCNNDetector.LogDiag("[Trigger] Stopped.");
+    }
+
+    /// <summary>
+    /// Drive the per-group READY handshake coil.
+    ///   • READY = 1  ? this trigger group is idle and willing to accept the
+    ///                  next hardware trigger. The PLC ANDs both groups' coils
+    ///                  to drive the operator buzzer / "place next part" lamp.
+    ///   • READY = 0  ? a batch is currently being processed for this group.
+    /// Coil address 0 disables the handshake for that group.
+    /// Modbus serialisation is provided by ModbusService._busLock, so this can
+    /// be called concurrently with rejection-coil writes without corrupting
+    /// the RTU framing.
+    /// </summary>
+    private void SetReady(int triggerGroup, bool ready)
+    {
+        ushort coil = _config.OutputCoils.GetReadyCoil(triggerGroup);
+        if (coil == 0) return; // disabled
+
+        if (!_modbus.WriteSingleCoil(coil, ready))
+        {
+            Debug.WriteLine($"[Trigger] Ready_T{triggerGroup}={(ready ? 1 : 0)} write FAILED @{coil}: {_modbus.LastError}");
+        }
+        else
+        {
+            Debug.WriteLine($"[Trigger] Ready_T{triggerGroup}={(ready ? 1 : 0)} (coil {coil})");
+        }
     }
 
     // ?? Sentinel Waiter (Producer) ??????????????????????????????????????????????????????????????
@@ -230,6 +270,24 @@ public class TriggerService : IDisposable
         int triggerGroup = trigger.Type == TriggerType.Trigger1 ? 1 : 2;
         string label = $"Trigger {triggerGroup}";
 
+        // Drop the READY coil for this group: we are now busy. Goes back to 1
+        // in the finally block below, regardless of which exit path is taken.
+        SetReady(triggerGroup, false);
+
+        try
+        {
+            ProcessTriggerCore(trigger, triggerGroup, label, tDequeue, queueLatencyMs);
+        }
+        finally
+        {
+            // Re-arm READY: this group is idle again and will accept the next trigger.
+            SetReady(triggerGroup, true);
+        }
+    }
+
+    private void ProcessTriggerCore(TriggerEvent trigger, int triggerGroup, string label,
+        DateTime tDequeue, double queueLatencyMs)
+    {
         Debug.WriteLine($"[Profiling] ???? {label} dequeued {tDequeue:HH:mm:ss.fff}  (queue latency: {queueLatencyMs:F1} ms) ????");
 
         // Find camera slots assigned to this trigger group
@@ -326,49 +384,63 @@ public class TriggerService : IDisposable
         var totalCaptureMs = (DateTime.Now - tCaptureStart).TotalMilliseconds;
         Debug.WriteLine($"[Profiling] Frame capture done: {totalCaptureMs:F1}ms | per-cam: [{string.Join(", ", frameCaptureTimes.Select(t => $"{t}ms"))}]");
 
-        // Run inference on captured frames
-        // NOTE: Sequential execution means total time = sum of all inspection times.
-        // CAM 2 geometry is slower than CAM 1 because BuildMaskCam2 uses:
-        //   - Ratio normalization (floating-point division per pixel)
-        //   - GaussianBlur 21×21 kernel
-        //   - AdaptiveThreshold 151×151 block (VERY expensive: ~23K pixels per output pixel)
-        //   - Morphology: 3× Close(35×35) + 1× Open(15×15) vs CAM 1's 2× Close(7×7) + 1× Open(7×7)
-        //   - Connected components with circularity scoring + hole filling
-        // Typical CAM 1 geo: ~100-120ms | CAM 2 geo: ~1400-1600ms
+        // Run inference on captured frames.
+        // Inferences run in PARALLEL across slots:
+        //   • MaskRCNNDetector uses a ThreadLocal<float[]> input buffer and ORT's
+        //     InferenceSession.Run is thread-safe.
+        //   • OringMeasurement.Measure / MeasureCam2 / YoloContourDetector.Detect
+        //     all use only locals + a read-only static background, so they are
+        //     reentrant.
+        // For T2 (3 cams) this collapses ~3×inference into ~max(inference) on
+        // GPU, modulo CUDA-stream contention (~20–30%).
         var tInspStart = DateTime.Now;
-        var resultList = new System.Collections.Generic.List<InspectionResult>();
-        var frameList = new System.Collections.Generic.List<Bitmap>();
-        var slotList = new System.Collections.Generic.List<int>();
         var sw = Stopwatch.StartNew();
-        var perCamTimes = new System.Collections.Generic.List<long>();
 
-        for (int i = 0; i < slotsForTrigger.Length; i++)
+        int n = slotsForTrigger.Length;
+        var resultsByIdx = new InspectionResult?[n];
+        var perCamTimes = new long[n];
+
+        Parallel.For(0, n, i =>
         {
-            if (frames[i] == null) continue;
+            if (frames[i] == null) return;
             var slotCfg = slotsForTrigger[i];
 
             Debug.WriteLine($"[Trigger] CAM {slotCfg.Slot + 1} frame: {frames[i]!.Width}x{frames[i]!.Height} px, detector={slotCfg.Detector}");
             var swInspect = Stopwatch.StartNew();
-            bool skipGeo = slotCfg.SkipGeoMeasurement;
-            var result = _inspection.InspectMaskRCNN(frames[i]!, triggerGroup, skipGeo, slot: slotCfg.Slot);
+            var result = _inspection.InspectMaskRCNN(frames[i]!, triggerGroup,
+                slotCfg.SkipGeoMeasurement, slot: slotCfg.Slot);
             long inspectMs = swInspect.ElapsedMilliseconds;
-            perCamTimes.Add(inspectMs);
-            resultList.Add(result);
-            frameList.Add(frames[i]!);
-            slotList.Add(slotCfg.Slot);
+
+            perCamTimes[i] = inspectMs;
+            resultsByIdx[i] = result;
 
             Debug.WriteLine($"[Trigger] CAM {slotCfg.Slot + 1} => {result.Verdict} | " +
                 $"total={result.TotalMs}ms geo={result.GeoMs}ms infer={result.InferenceMs}ms (wall: {inspectMs}ms)" +
                 $" | defect={result.HasDefect} topScore={result.TopScore:F3}" +
                 (result.FailReasons.Count > 0 ? $" | reasons=[{string.Join(", ", result.FailReasons)}]" : "") +
                 (result.ErrorMessage != null ? $" | ERROR: {result.ErrorMessage}" : ""));
+        });
+
+        // Re-assemble ordered output lists, skipping slots whose frame was null.
+        var resultList = new System.Collections.Generic.List<InspectionResult>(n);
+        var frameList = new System.Collections.Generic.List<Bitmap>(n);
+        var slotList = new System.Collections.Generic.List<int>(n);
+        for (int i = 0; i < n; i++)
+        {
+            if (resultsByIdx[i] == null) continue;
+            resultList.Add(resultsByIdx[i]!);
+            frameList.Add(frames[i]!);
+            slotList.Add(slotsForTrigger[i].Slot);
         }
 
         var results = resultList.ToArray();
         long batchMs = sw.ElapsedMilliseconds;
         var totalInspMs = (DateTime.Now - tInspStart).TotalMilliseconds;
-        Debug.WriteLine($"[Profiling] Inspection done: {totalInspMs:F1}ms (batch timer: {batchMs}ms) | per-cam: [{string.Join(", ", perCamTimes.Select(t => $"{t}ms"))}]");
-        Debug.WriteLine($"[Profiling] Sequential sum: {perCamTimes.Sum()}ms | parallel potential: max({string.Join(", ", perCamTimes)}) = {(perCamTimes.Count > 0 ? perCamTimes.Max() : 0)}ms (speedup: {(perCamTimes.Sum() > 0 ? (double)perCamTimes.Sum() / (perCamTimes.Count > 0 ? perCamTimes.Max() : 1) : 0):F1}x)");
+        long sumMs = perCamTimes.Sum();
+        long maxMs = n > 0 ? perCamTimes.Max() : 0;
+        double speedup = maxMs > 0 ? (double)sumMs / maxMs : 0;
+        Debug.WriteLine($"[Profiling] Inspection done (parallel): {totalInspMs:F1}ms wall (batch timer: {batchMs}ms) | per-cam: [{string.Join(", ", perCamTimes.Select(t => $"{t}ms"))}]");
+        Debug.WriteLine($"[Profiling] Sum-if-sequential: {sumMs}ms | parallel max: {maxMs}ms | effective speedup: {speedup:F1}x");
         Debug.WriteLine($"[Trigger] {label} batch complete: {batchMs}ms | verdicts=[{string.Join(", ", results.Select(r => r.Verdict))}]");
 
         // Dispose frames not used as overlay
