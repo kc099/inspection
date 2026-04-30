@@ -174,3 +174,169 @@ This document records:
 - the present asymmetric behavior,
 - why it may be undesirable,
 - and the recommended symmetric-range solution for future implementation.
+
+---
+
+## Additional Decision: CAM 2 Measurement Stability Improvement
+
+Separate from the asymmetric-threshold issue above, CAM 2 currently has another practical limitation:
+
+- it uses YOLO detections,
+- but only consumes the axis-aligned bounding boxes,
+- and estimates radius using `(width + height) / 4`.
+
+This works for many parts, but it can become unstable when the same defective part appears at a different rotation or orientation.
+In that situation, the physical part is the same, but the axis-aligned bounding box changes, which changes the estimated radius and can flip the verdict between `PASS` and `REWORK`.
+
+### Present CAM 2 measurement flow
+
+```mermaid
+flowchart TD
+    A[CAM 2 raw image] --> B[YOLO segmentation ONNX inference]
+    B --> C[Parse detections]
+    C --> D[Ignore mask output]
+    D --> E[Take 2 largest axis-aligned boxes]
+    E --> F[OuterRadius = (outer_w + outer_h) / 4]
+    E --> G[InnerRadius = (inner_w + inner_h) / 4]
+    F --> H[Compute CenterDist / Eccentricity]
+    G --> H
+    H --> I[ThresholdConfig.Evaluate]
+```
+
+### Why this is insufficient
+
+The axis-aligned bbox method is orientation-sensitive:
+
+1. the same part can rotate,
+2. the protrusion or extra material can appear on another side,
+3. the upright bounding box changes,
+4. the estimated radius changes,
+5. the verdict can flip even though the defect is the same.
+
+This issue has been observed especially for some `Model 1 -> CAM 2 -> REWORK` samples.
+
+---
+
+## Chosen Direction for CAM 2
+
+The selected improvement direction is:
+
+- use the **YOLO segmentation mask itself**,
+- reconstruct the outer and inner instance masks,
+- extract contours from those masks,
+- compute geometry from the actual shape,
+- use **minimum enclosing circle** and **circularity** instead of plain bbox-only radius.
+
+### New proposed CAM 2 measurement flow
+
+```mermaid
+flowchart TD
+    A[CAM 2 raw image] --> B[YOLO segmentation ONNX inference]
+    B --> C[Parse detections + mask coefficients + prototypes]
+    C --> D[Reconstruct outer and inner binary masks]
+    D --> E[Extract contours]
+    E --> F[Compute min enclosing circle for outer contour]
+    E --> G[Compute min enclosing circle for inner contour]
+    E --> H[Compute contour area + perimeter]
+    F --> I[OuterRadius]
+    G --> J[InnerRadius]
+    H --> K[CircularityOuter / CircularityInner]
+    I --> L[Compute CenterDist / Eccentricity]
+    J --> L
+    K --> M[ThresholdConfig.Evaluate]
+    L --> M
+```
+
+### Why this direction is chosen
+
+This direction is preferred over bbox-only radius because:
+
+1. it uses the actual predicted shape rather than only the box around it,
+2. it is less sensitive to rotation,
+3. it gives meaningful `CircularityOuter` and `CircularityInner` again,
+4. it better matches the physical geometry of a washer,
+5. it should reduce the `same part -> different orientation -> different verdict` problem.
+
+---
+
+## Files Planned for This Change
+
+### 1. `RoboViz/Services/YoloContourDetector.cs`
+
+Planned changes:
+
+- stop ignoring the mask branch of the YOLO segmentation output,
+- reconstruct instance masks from:
+  - detection mask coefficients,
+  - prototype masks,
+- expose enough information for CAM 2 geometry:
+  - outer mask / contour,
+  - inner mask / contour,
+  - detection confidence / class if needed.
+
+### 2. `RoboViz/Services/OringMeasurement.cs`
+
+Planned changes:
+
+- replace the current bbox-based `MeasureCam2(...)` implementation,
+- use reconstructed masks and contours,
+- compute:
+  - `OuterRadius` from the outer contour's minimum enclosing circle,
+  - `InnerRadius` from the inner contour's minimum enclosing circle,
+  - `CenterDist` from the circle centers,
+  - `EccentricityPct` from the same existing formula,
+  - `CircularityOuter` from contour area / perimeter,
+  - `CircularityInner` from contour area / perimeter.
+
+### 3. `RoboViz/Models/GeometricResult.cs`
+
+Likely unchanged unless extra overlay/debug data is required.
+If necessary, this file may be extended to store additional contour or circle metadata for CAM 2 visualization.
+
+### 4. `RoboViz/Services/InspectionService.cs`
+
+Expected to remain functionally unchanged.
+It will continue calling `MeasureCam2(...)`; only the internal measurement method will change.
+
+---
+
+## Parts That Will Remain Unchanged
+
+The following parts are not intended to change as part of this CAM 2 measurement improvement:
+
+- `ThresholdConfig.Evaluate(...)` asymmetric logic (for now),
+- trigger threading model,
+- `TriggerService`,
+- `Analyze` vs trigger orchestration,
+- output coil logic,
+- CAM 3 / CAM 4 resize-only path,
+- CSV threshold loading flow.
+
+---
+
+## Timing Expectation
+
+This change adds:
+
+- mask reconstruction,
+- contour extraction,
+- enclosing-circle calculation,
+- circularity calculation.
+
+But these are still small compared to:
+
+- the camera trigger-to-frame delay,
+- the main MaskRCNN inference time.
+
+So the expected total cycle time should remain in roughly the same class, with only a modest CPU increase.
+
+---
+
+## Implementation Start Note
+
+The implementation will begin with:
+
+1. extending `YoloContourDetector.cs` to reconstruct usable masks,
+2. updating `OringMeasurement.MeasureCam2(...)` to use contour-based geometry,
+3. validating the rotated / flipped Model 1 rework case,
+4. then retuning `model1_3002_measurements_stats.csv` and `model2_3002_measurements_stats.csv` if needed.
