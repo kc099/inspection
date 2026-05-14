@@ -91,9 +91,11 @@ public static class OringMeasurement
             return null;
         }
 
-        // Fit circles via least squares
-        var (ox, oy, orad) = FitCircleLsq(outer);
-        var (ix, iy, irad) = FitCircleLsq(inner);
+        // Fit circles via minimum enclosing circle
+        Cv2.MinEnclosingCircle(outer, out var outerCenter, out float outerRadius);
+        Cv2.MinEnclosingCircle(inner, out var innerCenter, out float innerRadius);
+        double ox = outerCenter.X, oy = outerCenter.Y, orad = outerRadius;
+        double ix = innerCenter.X, iy = innerCenter.Y, irad = innerRadius;
         double cdist = Math.Sqrt((ox - ix) * (ox - ix) + (oy - iy) * (oy - iy));
         double mrad = (orad + irad) / 2.0;
 

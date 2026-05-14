@@ -122,9 +122,9 @@ public class OutputCoilConfig
     // Set the coil address to 0 to disable that group's handshake.
 
     /// <summary>Coil address: TriggerGroup 1 ready-for-next-trigger handshake.</summary>
-    public ushort ReadyCoil_T1 { get; set; } = 4010;
+    public ushort ReadyCoil_T1 { get; set; } = 4001;
     /// <summary>Coil address: TriggerGroup 2 ready-for-next-trigger handshake.</summary>
-    public ushort ReadyCoil_T2 { get; set; } = 4011;
+    public ushort ReadyCoil_T2 { get; set; } = 4002;
 
     /// <summary>Convenience accessor: ready coil for a given trigger group.</summary>
     public ushort GetReadyCoil(int triggerGroup) =>

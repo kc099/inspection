@@ -340,3 +340,5 @@ The implementation will begin with:
 2. updating `OringMeasurement.MeasureCam2(...)` to use contour-based geometry,
 3. validating the rotated / flipped Model 1 rework case,
 4. then retuning `model1_3002_measurements_stats.csv` and `model2_3002_measurements_stats.csv` if needed.
+model2_3002->circularity_outer,0.4397,0.1815,0.1374,0.6848,0.1725,0.6371,45
+model1_3002->circularity_outer,0.4495,0.1804,0.1399,0.6791,0.1697,0.6324,45
