@@ -250,28 +250,43 @@ namespace RoboViz
         {
             try
             {
+                Debug.WriteLine("[CameraInit] Starting camera enumeration...");
                 progress?.Report("Enumerating cameras...");
                 ApplyCameraSlotSelection();
                 _cameraManager = new CameraManager();
 
-                int found = await Task.Run(() => _cameraManager.Initialize());
+                Debug.WriteLine("[CameraInit] Calling CameraManager.Initialize()...");
+                int found = await Task.Run(() =>
+                {
+                    Debug.WriteLine("[CameraInit] Background: Initialize() starting...");
+                    int result = _cameraManager.Initialize();
+                    Debug.WriteLine($"[CameraInit] Background: Initialize() returned {result}");
+                    return result;
+                });
+
+                Debug.WriteLine($"[CameraInit] Found {found} camera(s)");
                 if (found == 0)
                 {
+                    // Reset all slot device indices so TriggerService does not try to
+                    // arm cameras that were not found this session.
+                    foreach (var slot in _cameraSlots)
+                        slot.DeviceIndex = -1;
                     progress?.Report("No cameras found");
                     DetailsText.Text = "No cameras detected. Trigger mode will run without cameras (signal only).";
+                    Debug.WriteLine("[CameraInit] No cameras found — all DeviceIndex reset to -1.");
                     return;
                 }
 
                 var descriptions = _cameraManager.GetCameraDescriptions();
                 DetailsText.Text = $"Found {found} camera(s) (ready for triggers):\n" + string.Join("\n", descriptions);
-                Debug.WriteLine($"[CameraInit] Found {found} camera(s), ready for on-demand capture.");
+                Debug.WriteLine($"[CameraInit] Camera descriptions:\n{string.Join("\n", descriptions)}");
                 progress?.Report($"Cameras ready: {found} device(s)");
             }
             catch (Exception ex)
             {
+                Debug.WriteLine($"[CameraInit] ERROR: {ex.Message}\n{ex}");
                 DetailsText.Text += $"\nCamera enumeration failed: {ex.Message}";
                 MaskRCNNDetector.LogDiag($"[CameraInit] Enumeration failed: {ex.Message}");
-                Debug.WriteLine($"[CameraInit] ERROR: {ex.Message}");
             }
         }
 
@@ -282,15 +297,16 @@ namespace RoboViz
         {
             try
             {
+                Debug.WriteLine("[MainWindow] AutoStartTrigger() starting...");
                 StartTriggerMode();
             }
             catch (Exception ex)
             {
+                Debug.WriteLine($"[MainWindow] AutoStartTrigger() failed: {ex.Message}");
                 TriggerStatusText.Text = $"Auto-start failed: {ex.Message}";
                 TriggerStatusText.Foreground = ErrorRed;
                 DetailsText.Text += $"\n\nTRIGGER ERROR: {ex.Message}";
                 MaskRCNNDetector.LogDiag($"[AutoStart] Trigger init failed: {ex}");
-                Debug.WriteLine($"[AutoStart] Trigger FAILED: {ex.Message}");
             }
         }
 
@@ -336,37 +352,67 @@ namespace RoboViz
         {
             if (_triggerService?.IsRunning == true) return;
 
+            Debug.WriteLine("[MainWindow] StartTriggerMode() starting...");
             var config = EnsureTriggerConfig();
-            var outputTransport = EnsureOutputService();
+            Debug.WriteLine($"[MainWindow] Trigger config loaded: mode={config.CommunicationMode}");
+            
             ApplyCameraSlotSelection();
 
-            _triggerService = new TriggerService(
-                outputTransport, _cameraManager, _service, config, _cameraSlots,
-                result => Dispatcher.BeginInvoke(() => OnTriggerResult(result)));
-
-            // Always hardware trigger mode: cameras must be armed before sentinel waiters start.
-            if (_cameraManager != null && !_cameraManager.IsStreaming)
+            // Initialize output service on a background thread to avoid UI blocking
+            Debug.WriteLine("[MainWindow] Initializing output service on background thread...");
+            Task.Run(() =>
             {
-                Debug.WriteLine("[MainWindow] Starting cameras in HARDWARE TRIGGER mode...");
-                _cameraManager.StartHardwareTrigger(_cameraSlots);
-                _isStreaming = true;
-            }
-            else
-            {
-                Debug.WriteLine($"[MainWindow] Cameras already streaming or not available (IsStreaming={_cameraManager?.IsStreaming})");
-            }
+                try
+                {
+                    Debug.WriteLine("[MainWindow] Background: EnsureOutputService() starting...");
+                    var outputTransport = EnsureOutputService();
+                    Debug.WriteLine("[MainWindow] Background: EnsureOutputService() complete");
 
-            _triggerService.Start();
+                    Dispatcher.BeginInvoke(() =>
+                    {
+                        Debug.WriteLine("[MainWindow] UI: Creating TriggerService...");
+                        _triggerService = new TriggerService(
+                            outputTransport, _cameraManager, _service, config, _cameraSlots,
+                            result => Dispatcher.BeginInvoke(() => OnTriggerResult(result)));
 
-            BtnTriggerStart.IsEnabled = false;
-            BtnTriggerStop.IsEnabled = true;
-            string transportStatus = string.Equals(config.CommunicationMode, "http", StringComparison.OrdinalIgnoreCase)
-                ? "HTTP outputs"
-                : ( _modbus?.IsConnected == true ? $"{config.ComPort} @ {config.BaudRate}" : "modbus outputs" );
-            TriggerStatusText.Text = $"Running [HW TRIGGER] — {transportStatus} | waiting for camera-triggered frames...";
-            TriggerStatusText.Foreground = ReadyGreen;
+                        // Only arm cameras if at least one slot has a valid device assigned.
+                        bool anyCameraAssigned = _cameraSlots.Any(c => c.DeviceIndex >= 0);
+                        if (_cameraManager != null && !_cameraManager.IsStreaming && anyCameraAssigned)
+                        {
+                            Debug.WriteLine("[MainWindow] UI: Starting cameras in HARDWARE TRIGGER mode...");
+                            _cameraManager.StartHardwareTrigger(_cameraSlots);
+                            _isStreaming = true;
+                        }
+                        else
+                        {
+                            Debug.WriteLine($"[MainWindow] UI: Skipping hardware trigger arm — anyCameraAssigned={anyCameraAssigned}, IsStreaming={_cameraManager?.IsStreaming}");
+                        }
 
-            Debug.WriteLine("[MainWindow] Hardware trigger mode started.");
+                        Debug.WriteLine("[MainWindow] UI: Starting TriggerService...");
+                        _triggerService.Start();
+
+                        BtnTriggerStart.IsEnabled = false;
+                        BtnTriggerStop.IsEnabled = true;
+                        string transportStatus = string.Equals(config.CommunicationMode, "http", StringComparison.OrdinalIgnoreCase)
+                            ? "HTTP outputs"
+                            : ( _modbus?.IsConnected == true ? $"{config.ComPort} @ {config.BaudRate}" : "modbus outputs" );
+                        TriggerStatusText.Text = $"Running [HW TRIGGER] — {transportStatus} | waiting for camera-triggered frames...";
+                        TriggerStatusText.Foreground = ReadyGreen;
+
+                        Debug.WriteLine("[MainWindow] Hardware trigger mode started.");
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[MainWindow] Background thread error: {ex.Message}");
+                    Dispatcher.BeginInvoke(() =>
+                    {
+                        TriggerStatusText.Text = $"Failed to initialize outputs: {ex.Message}";
+                        TriggerStatusText.Foreground = ErrorRed;
+                        DetailsText.Text += $"\n\nTRIGGER ERROR: {ex.Message}";
+                    });
+                }
+            });
         }
 
         private void OnPollStatus(TriggerPollStatus poll)
@@ -836,28 +882,41 @@ namespace RoboViz
 
                 try
                 {
+                    Debug.WriteLine($"[Analyze] UpdateAnalysisResults: verdicts count={verdicts.Count}, group1Used={group1Used}, group2Used={group2Used}");
+                    for (int i = 0; i < count; i++)
+                        Debug.WriteLine($"[Analyze] Slot {i}: verdict='{verdicts.GetValueOrDefault(i, "NONE")}'");
+
                     if (group1Used) SetManualReadyOutput(outputs, OutputChannel.ReadyT1, ready: false, "T1");
                     if (group2Used) SetManualReadyOutput(outputs, OutputChannel.ReadyT2, ready: false, "T2");
 
                     // Sensor 3001 logic: CAM 1 (slot 0)
                     verdicts.TryGetValue(0, out string? cam1V);
+                    Debug.WriteLine($"[Analyze] CAM 1 verdict: '{cam1V}'");
                     if (cam1V == "REWORK")
                     {
+                        Debug.WriteLine($"[Analyze] CAM 1 REWORK -> activating Cam1Rework");
                         if (ActivateManualOutput(outputs, OutputChannel.Cam1Rework, oc.Cam1_ReworkDelayMs, oc.CoilOnDurationMs, out string? err))
                             activated.Add($"Cam1_Rework@{oc.Cam1_ReworkCoil}");
                         else { allOk = false; lastError = err; }
                     }
                     else if (cam1V == "REJECT")
                     {
+                        Debug.WriteLine($"[Analyze] CAM 1 REJECT -> activating Cam1Reject");
                         if (ActivateManualOutput(outputs, OutputChannel.Cam1Reject, oc.Cam1_RejectDelayMs, oc.CoilOnDurationMs, out string? err))
                             activated.Add($"Cam1_Reject@{oc.Cam1_RejectCoil}");
                         else { allOk = false; lastError = err; }
+                    }
+                    else
+                    {
+                        Debug.WriteLine($"[Analyze] CAM 1 PASS or null -> no output");
                     }
 
                     // Sensor 3002 logic: CAM 2 (slot 1, top), CAM 3 (slot 2, side), CAM 4 (slot 3, side)
                     verdicts.TryGetValue(1, out string? cam2V);
                     verdicts.TryGetValue(2, out string? cam3V);
                     verdicts.TryGetValue(3, out string? cam4V);
+
+                    Debug.WriteLine($"[Analyze] CAM 2 verdict: '{cam2V}', CAM 3 verdict: '{cam3V}', CAM 4 verdict: '{cam4V}'");
 
                     bool anyReject = cam2V == "REJECT" || cam3V == "REJECT" || cam4V == "REJECT";
                     bool cam2Rework = cam2V == "REWORK";
@@ -867,27 +926,35 @@ namespace RoboViz
                     {
                         if (anyReject)
                         {
+                            Debug.WriteLine($"[Analyze] Reject priority + anyReject -> activating Cam234Reject");
                             if (ActivateManualOutput(outputs, OutputChannel.Cam234Reject, oc.Cam234_RejectDelayMs, oc.CoilOnDurationMs, out string? err))
                                 activated.Add($"Cam234_Reject@{oc.Cam234_RejectCoil}");
                             else { allOk = false; lastError = err; }
                         }
                         else if (cam2Rework)
                         {
+                            Debug.WriteLine($"[Analyze] Reject priority + cam2Rework -> activating Cam2Rework");
                             if (ActivateManualOutput(outputs, OutputChannel.Cam2Rework, oc.Cam2_ReworkDelayMs, oc.CoilOnDurationMs, out string? err))
                                 activated.Add($"Cam2_Rework@{oc.Cam2_ReworkCoil}");
                             else { allOk = false; lastError = err; }
+                        }
+                        else
+                        {
+                            Debug.WriteLine($"[Analyze] Reject priority + all PASS -> no output");
                         }
                     }
                     else
                     {
                         if (anyReject)
                         {
+                            Debug.WriteLine($"[Analyze] Rework priority + anyReject -> activating Cam234Reject");
                             if (ActivateManualOutput(outputs, OutputChannel.Cam234Reject, oc.Cam234_RejectDelayMs, oc.CoilOnDurationMs, out string? err))
                                 activated.Add($"Cam234_Reject@{oc.Cam234_RejectCoil}");
                             else { allOk = false; lastError = err; }
                         }
                         if (cam2Rework)
                         {
+                            Debug.WriteLine($"[Analyze] Rework priority + cam2Rework -> activating Cam2Rework");
                             if (ActivateManualOutput(outputs, OutputChannel.Cam2Rework, oc.Cam2_ReworkDelayMs, oc.CoilOnDurationMs, out string? err))
                                 activated.Add($"Cam2_Rework@{oc.Cam2_ReworkCoil}");
                             else { allOk = false; lastError = err; }
@@ -935,9 +1002,7 @@ namespace RoboViz
         }
 
         /// <summary>
-        /// Activate a single output for manual Analyze testing.
-        /// In HTTP mode: delay → ON (OFF/reset handled by PCB).
-        /// In Modbus mode: delay → ON → duration → OFF.
+        /// Activate a single output for manual Analyze testing: delay → ON → duration → OFF.
         /// Runs on a background thread (called inside Task.Run).
         /// </summary>
         private static bool ActivateManualOutput(OutputCommunicationService outputs, OutputChannel channel, int delayMs, int durationMs, out string? error)
@@ -954,12 +1019,6 @@ namespace RoboViz
                 }
 
                 Debug.WriteLine($"[Analyze] {channel} ON (delay={delayMs}ms)");
-
-                if (string.Equals(outputs.CommunicationMode, "http", StringComparison.OrdinalIgnoreCase))
-                {
-                    error = null;
-                    return true;
-                }
 
                 if (durationMs > 0)
                     Thread.Sleep(durationMs);
