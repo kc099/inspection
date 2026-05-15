@@ -16,13 +16,12 @@ namespace RoboViz;
 /// </summary>
 public class TriggerService : IDisposable
 {
-    private readonly ModbusService _modbus;
+    private readonly OutputCommunicationService _outputs;
     private readonly CameraManager? _cameras;
     private readonly InspectionService? _inspection;
     private readonly TriggerConfig _config;
     private readonly CameraSlotConfig[] _cameraSlots;
     private readonly Action<TriggerResultEvent> _onResult;
-    private readonly bool _ownsModbus;
 
     // One queue + one consumer per trigger group, so groups process in parallel.
     private readonly Dictionary<int, BlockingCollection<TriggerEvent>> _queues = [];
@@ -32,32 +31,29 @@ public class TriggerService : IDisposable
 
     public bool IsRunning => _running;
 
-    /// <param name="modbus">Already-connected ModbusService instance.</param>
+    /// <param name="outputs">Shared output transport for Modbus or HTTP writes.</param>
     /// <param name="cameras">CameraManager instance, or null if cameras not streaming.</param>
     /// <param name="inspection">InspectionService, or null if model not loaded.</param>
     /// <param name="config">Trigger configuration from file.</param>
     /// <param name="cameraSlots">Per-camera configuration (detector, trigger group, delay).</param>
     /// <param name="onResult">Callback invoked on the consumer thread with results (caller must marshal to UI).</param>
     /// <param name="onPollStatus">Optional callback invoked every poll cycle with read status (caller must marshal to UI).</param>
-    /// <param name="ownsModbus">If true (default), Dispose will also dispose the ModbusService.</param>
     public TriggerService(
-        ModbusService modbus,
+        OutputCommunicationService outputs,
         CameraManager? cameras,
         InspectionService? inspection,
         TriggerConfig config,
         CameraSlotConfig[] cameraSlots,
         Action<TriggerResultEvent> onResult,
-        Action<TriggerPollStatus>? onPollStatus = null,
-        bool ownsModbus = true)
+        Action<TriggerPollStatus>? onPollStatus = null)
     {
-        _modbus = modbus;
+        _outputs = outputs;
         _cameras = cameras;
         _inspection = inspection;
         _config = config;
         _cameraSlots = cameraSlots;
         _onResult = onResult;
         _ = onPollStatus; // Poll callback retained in the public signature for backward compatibility.
-        _ownsModbus = ownsModbus;
 
         string camStatus = cameras == null ? "NULL" : (cameras.IsStreaming ? "streaming" : "initialized");
         string inspStatus = inspection == null ? "NULL" : "loaded";
@@ -178,16 +174,14 @@ public class TriggerService : IDisposable
     /// </summary>
     private void SetReady(int triggerGroup, bool ready)
     {
-        ushort coil = _config.OutputCoils.GetReadyCoil(triggerGroup);
-        if (coil == 0) return; // disabled
-
-        if (!_modbus.WriteSingleCoil(coil, ready))
+        var channel = triggerGroup == 1 ? OutputChannel.ReadyT1 : OutputChannel.ReadyT2;
+        if (!_outputs.Write(channel, ready))
         {
-            Debug.WriteLine($"[Trigger] Ready_T{triggerGroup}={(ready ? 1 : 0)} write FAILED @{coil}: {_modbus.LastError}");
+            Debug.WriteLine($"[Trigger] Ready_T{triggerGroup}={(ready ? 1 : 0)} write FAILED: {_outputs.LastError}");
         }
         else
         {
-            Debug.WriteLine($"[Trigger] Ready_T{triggerGroup}={(ready ? 1 : 0)} (coil {coil})");
+            Debug.WriteLine($"[Trigger] Ready_T{triggerGroup}={(ready ? 1 : 0)}");
         }
     }
 
@@ -481,7 +475,6 @@ public class TriggerService : IDisposable
     private (bool ok, string? error, string? coilsActivated) WriteRejectionCoils(
         int triggerGroup, InspectionResult[] results, System.Collections.Generic.List<int> slotList)
     {
-        var oc = _config.OutputCoils;
         var activated = new System.Collections.Generic.List<string>();
         bool allOk = true;
         string? lastError = null;
@@ -491,65 +484,98 @@ public class TriggerService : IDisposable
         for (int i = 0; i < results.Length && i < slotList.Count; i++)
             verdictBySlot[slotList[i]] = results[i].Verdict;
 
+        bool Activate(OutputChannel channel, int delayMs, int durationMs, string label, out string? err)
+        {
+            try
+            {
+                if (delayMs > 0)
+                    Thread.Sleep(delayMs);
+
+                if (!_outputs.Write(channel, true))
+                {
+                    err = $"Write ON failed for {label}: {_outputs.LastError}";
+                    Debug.WriteLine($"[Trigger] {err}");
+                    return false;
+                }
+
+                Debug.WriteLine($"[Trigger] {label} ON (delay={delayMs}ms)");
+
+                if (durationMs > 0)
+                    Thread.Sleep(durationMs);
+
+                if (!_outputs.Write(channel, false))
+                {
+                    err = $"Write OFF failed for {label}: {_outputs.LastError}";
+                    Debug.WriteLine($"[Trigger] {err}");
+                    return false;
+                }
+
+                Debug.WriteLine($"[Trigger] {label} OFF (held {durationMs}ms)");
+                err = null;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                err = $"{label} exception: {ex.Message}";
+                Debug.WriteLine($"[Trigger] {err}");
+                return false;
+            }
+        }
+
         if (triggerGroup == 1)
         {
-            // Sensor 3001: CAM 1 (slot 0)
             verdictBySlot.TryGetValue(0, out string? cam1Verdict);
 
             if (cam1Verdict == "REWORK")
             {
-                if (ActivateCoil(oc.Cam1_ReworkCoil, oc.Cam1_ReworkDelayMs, oc.CoilOnDurationMs, out string? err))
-                    activated.Add($"Cam1_Rework@{oc.Cam1_ReworkCoil}");
+                if (Activate(OutputChannel.Cam1Rework, _config.OutputCoils.Cam1_ReworkDelayMs, _config.OutputCoils.CoilOnDurationMs, "Cam1_Rework", out string? err))
+                    activated.Add($"Cam1_Rework@{_config.OutputCoils.Cam1_ReworkCoil}");
                 else { allOk = false; lastError = err; }
             }
             else if (cam1Verdict == "REJECT")
             {
-                if (ActivateCoil(oc.Cam1_RejectCoil, oc.Cam1_RejectDelayMs, oc.CoilOnDurationMs, out string? err))
-                    activated.Add($"Cam1_Reject@{oc.Cam1_RejectCoil}");
+                if (Activate(OutputChannel.Cam1Reject, _config.OutputCoils.Cam1_RejectDelayMs, _config.OutputCoils.CoilOnDurationMs, "Cam1_Reject", out string? err))
+                    activated.Add($"Cam1_Reject@{_config.OutputCoils.Cam1_RejectCoil}");
                 else { allOk = false; lastError = err; }
             }
         }
         else if (triggerGroup == 2)
         {
-            // Sensor 3002: CAM 2 (slot 1, top), CAM 3 (slot 2, side), CAM 4 (slot 3, side)
             verdictBySlot.TryGetValue(1, out string? cam2Verdict);
             verdictBySlot.TryGetValue(2, out string? cam3Verdict);
             verdictBySlot.TryGetValue(3, out string? cam4Verdict);
 
             bool anyReject = cam2Verdict == "REJECT" || cam3Verdict == "REJECT" || cam4Verdict == "REJECT";
             bool cam2Rework = cam2Verdict == "REWORK";
-
-            bool rejectPriority = !string.Equals(oc.ConflictPriority, "rework", StringComparison.OrdinalIgnoreCase);
+            bool rejectPriority = !string.Equals(_config.OutputCoils.ConflictPriority, "rework", StringComparison.OrdinalIgnoreCase);
 
             if (rejectPriority)
             {
-                // "reject" priority: if any reject, fire reject coil only; rework only if no reject
                 if (anyReject)
                 {
-                    if (ActivateCoil(oc.Cam234_RejectCoil, oc.Cam234_RejectDelayMs, oc.CoilOnDurationMs, out string? err))
-                        activated.Add($"Cam234_Reject@{oc.Cam234_RejectCoil}");
+                    if (Activate(OutputChannel.Cam234Reject, _config.OutputCoils.Cam234_RejectDelayMs, _config.OutputCoils.CoilOnDurationMs, "Cam234_Reject", out string? err))
+                        activated.Add($"Cam234_Reject@{_config.OutputCoils.Cam234_RejectCoil}");
                     else { allOk = false; lastError = err; }
                 }
                 else if (cam2Rework)
                 {
-                    if (ActivateCoil(oc.Cam2_ReworkCoil, oc.Cam2_ReworkDelayMs, oc.CoilOnDurationMs, out string? err))
-                        activated.Add($"Cam2_Rework@{oc.Cam2_ReworkCoil}");
+                    if (Activate(OutputChannel.Cam2Rework, _config.OutputCoils.Cam2_ReworkDelayMs, _config.OutputCoils.CoilOnDurationMs, "Cam2_Rework", out string? err))
+                        activated.Add($"Cam2_Rework@{_config.OutputCoils.Cam2_ReworkCoil}");
                     else { allOk = false; lastError = err; }
                 }
             }
             else
             {
-                // "rework" priority: both can fire
                 if (anyReject)
                 {
-                    if (ActivateCoil(oc.Cam234_RejectCoil, oc.Cam234_RejectDelayMs, oc.CoilOnDurationMs, out string? err))
-                        activated.Add($"Cam234_Reject@{oc.Cam234_RejectCoil}");
+                    if (Activate(OutputChannel.Cam234Reject, _config.OutputCoils.Cam234_RejectDelayMs, _config.OutputCoils.CoilOnDurationMs, "Cam234_Reject", out string? err))
+                        activated.Add($"Cam234_Reject@{_config.OutputCoils.Cam234_RejectCoil}");
                     else { allOk = false; lastError = err; }
                 }
                 if (cam2Rework)
                 {
-                    if (ActivateCoil(oc.Cam2_ReworkCoil, oc.Cam2_ReworkDelayMs, oc.CoilOnDurationMs, out string? err))
-                        activated.Add($"Cam2_Rework@{oc.Cam2_ReworkCoil}");
+                    if (Activate(OutputChannel.Cam2Rework, _config.OutputCoils.Cam2_ReworkDelayMs, _config.OutputCoils.CoilOnDurationMs, "Cam2_Rework", out string? err))
+                        activated.Add($"Cam2_Rework@{_config.OutputCoils.Cam2_ReworkCoil}");
                     else { allOk = false; lastError = err; }
                 }
             }
@@ -563,48 +589,6 @@ public class TriggerService : IDisposable
         return (ok, error, coilsSummary);
     }
 
-    /// <summary>
-    /// Activate a single coil: wait delay ? turn ON ? wait duration ? turn OFF.
-    /// Runs on the consumer thread (blocking is acceptable here).
-    /// </summary>
-    private bool ActivateCoil(ushort coilAddress, int delayMs, int durationMs, out string? error)
-    {
-        try
-        {
-            if (delayMs > 0)
-                Thread.Sleep(delayMs);
-
-            if (!_modbus.WriteSingleCoil(coilAddress, true))
-            {
-                error = $"Write ON failed @{coilAddress}: {_modbus.LastError}";
-                Debug.WriteLine($"[Trigger] {error}");
-                return false;
-            }
-
-            Debug.WriteLine($"[Trigger] Coil {coilAddress} ON (delay={delayMs}ms)");
-
-            if (durationMs > 0)
-                Thread.Sleep(durationMs);
-
-            if (!_modbus.WriteSingleCoil(coilAddress, false))
-            {
-                error = $"Write OFF failed @{coilAddress}: {_modbus.LastError}";
-                Debug.WriteLine($"[Trigger] {error}");
-                return false;
-            }
-
-            Debug.WriteLine($"[Trigger] Coil {coilAddress} OFF (held {durationMs}ms)");
-            error = null;
-            return true;
-        }
-        catch (Exception ex)
-        {
-            error = $"Coil {coilAddress} exception: {ex.Message}";
-            Debug.WriteLine($"[Trigger] {error}");
-            return false;
-        }
-    }
-
     public void Dispose()
     {
         Stop();
@@ -614,11 +598,5 @@ public class TriggerService : IDisposable
             try { q.Dispose(); } catch { }
         }
         _queues.Clear();
-
-        if (_ownsModbus)
-        {
-            _modbus.Dispose();
-            Debug.WriteLine("[Trigger] Owned ModbusService disposed.");
-        }
     }
 }

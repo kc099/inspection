@@ -7,20 +7,28 @@
   "OutputCoilAddress": 3003,
   "CaptureDelayMs": 400,
   "PollIntervalMs": 200,
+  "CommunicationMode": "http",
   "CameraTriggerMode": "hardware",
   "OutputCoils": {
     "Cam1_ReworkCoil": 4001,
     "Cam1_RejectCoil": 4002,
     "Cam234_RejectCoil": 4003,
     "Cam2_ReworkCoil": 4004,
-    "Cam1_ReworkDelayMs": 100,
-    "Cam1_RejectDelayMs": 100,
-    "Cam234_RejectDelayMs": 100,
-    "Cam2_ReworkDelayMs": 100,
+    "Cam1_ReworkDelayMs": 200,
+    "Cam1_RejectDelayMs": 200,
+    "Cam234_RejectDelayMs": 200,
+    "Cam2_ReworkDelayMs": 200,
     "CoilOnDurationMs": 200,
     "ConflictPriority": "reject",
     "ReadyCoil_T1": 4010,
     "ReadyCoil_T2": 4011
+  },
+  "HttpOutputs": {
+    "ReadyCoil_T1": "http://192.168.4.1/1",
+    "ReadyCoil_T2": "http://192.168.4.1/2",
+    "Cam1_ReworkCoil": "http://192.168.4.1/3",
+    "Cam1_RejectCoil": "http://192.168.4.1/4",
+    "Cam234_RejectCoil": "http://192.168.4.1/5",
+    "Cam2_ReworkCoil": "http://192.168.4.1/6"
   }
 }
-	

@@ -5,6 +5,19 @@ using System.Text.Json;
 namespace RoboViz;
 
 /// <summary>
+/// Logical output channels that can be driven either by Modbus coils or by HTTP endpoints.
+/// </summary>
+public enum OutputChannel
+{
+    ReadyT1,
+    ReadyT2,
+    Cam1Rework,
+    Cam1Reject,
+    Cam234Reject,
+    Cam2Rework,
+}
+
+/// <summary>
 /// Configuration loaded from trigger_config.json.
 /// </summary>
 public class TriggerConfig
@@ -17,6 +30,17 @@ public class TriggerConfig
     public ushort OutputCoilAddress { get; set; } = 10;
     public int CaptureDelayMs { get; set; } = 50;
     public int PollIntervalMs { get; set; } = 200;
+
+    /// <summary>
+    /// Output communication backend. Supported values: "modbus" and "http".
+    /// </summary>
+    public string CommunicationMode { get; set; } = "modbus";
+
+    /// <summary>
+    /// HTTP endpoints for each logical output channel.
+    /// The app POSTs plain-text "1" to activate and "0" to deactivate.
+    /// </summary>
+    public HttpOutputConfig HttpOutputs { get; set; } = new();
 
     /// <summary>
     /// Legacy mode selector kept for configuration compatibility.
@@ -71,7 +95,7 @@ public class TriggerConfig
         var config = JsonSerializer.Deserialize<TriggerConfig>(json) ?? new TriggerConfig();
         MaskRCNNDetector.LogDiag($"[TriggerConfig] Loaded: {config.ComPort} @ {config.BaudRate}, slave {config.SlaveId}, " +
             $"trigger coils {config.TriggerCoil_Cam13}/{config.TriggerCoil_Cam24}, output coil {config.OutputCoilAddress}, " +
-            $"poll {config.PollIntervalMs}ms");
+            $"poll {config.PollIntervalMs}ms, mode {config.CommunicationMode}");
         return config;
     }
 
@@ -81,6 +105,30 @@ public class TriggerConfig
         var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
         File.WriteAllText(path, json);
     }
+}
+
+/// <summary>
+/// HTTP output endpoint configuration.
+/// </summary>
+public class HttpOutputConfig
+{
+    public string ReadyCoil_T1 { get; set; } = string.Empty;
+    public string ReadyCoil_T2 { get; set; } = string.Empty;
+    public string Cam1_ReworkCoil { get; set; } = string.Empty;
+    public string Cam1_RejectCoil { get; set; } = string.Empty;
+    public string Cam234_RejectCoil { get; set; } = string.Empty;
+    public string Cam2_ReworkCoil { get; set; } = string.Empty;
+
+    public string? GetUrl(OutputChannel channel) => channel switch
+    {
+        OutputChannel.ReadyT1 => ReadyCoil_T1,
+        OutputChannel.ReadyT2 => ReadyCoil_T2,
+        OutputChannel.Cam1Rework => Cam1_ReworkCoil,
+        OutputChannel.Cam1Reject => Cam1_RejectCoil,
+        OutputChannel.Cam234Reject => Cam234_RejectCoil,
+        OutputChannel.Cam2Rework => Cam2_ReworkCoil,
+        _ => null,
+    };
 }
 
 /// <summary>
