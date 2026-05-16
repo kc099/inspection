@@ -13,8 +13,15 @@ public sealed class OutputCommunicationService : IDisposable
 {
     private readonly TriggerConfig _config;
     private readonly ModbusService? _modbus;
-    private readonly HttpClient _httpClient = new();
+    private readonly HttpClient _httpClient;
     private bool _disposed;
+
+    /// <summary>
+    /// Timeout per HTTP POST. Framework default is 100 s which is far too long
+    /// for a real-time conveyor loop — 3 s keeps the pipeline responsive if the
+    /// PCB hotspot is temporarily unreachable.
+    /// </summary>
+    private static readonly TimeSpan HttpTimeout = TimeSpan.FromSeconds(3);
 
     public string CommunicationMode => _config.CommunicationMode;
     public string? LastError { get; private set; }
@@ -23,6 +30,7 @@ public sealed class OutputCommunicationService : IDisposable
     {
         _config = config;
         _modbus = modbus;
+        _httpClient = new HttpClient { Timeout = HttpTimeout };
     }
 
     public bool Write(OutputChannel channel, bool state)

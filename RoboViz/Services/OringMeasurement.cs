@@ -16,7 +16,7 @@ namespace RoboViz;
 public static class OringMeasurement
 {
     public const int DefaultBgValue = 24;
-    private const int DefaultThreshold = 30;
+    private const int DefaultThreshold =40;//lohith changed bg subtraction
 
     // Cam2 background image cache (loaded once, reused every call)
     private static Mat? _cam2BgGray;

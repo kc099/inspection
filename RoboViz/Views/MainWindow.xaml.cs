@@ -162,8 +162,10 @@ namespace RoboViz
                     if (!File.Exists(modelPath))
                         throw new FileNotFoundException("ONNX model not found at: " + modelPath);
 
+                    var trigCfg = TriggerConfig.Load();
                     _service = new InspectionService(modelPath, scoreThreshold: 0.5f,
-                        useGpu: true, progress: progress, modelName: "Model 2");
+                        useGpu: true, progress: progress, modelName: "Model 2",
+                        cam1GeoMethod: trigCfg.Cam1GeoMethod);
                 });
 
                 // Wait with extended timeout for PCIe Gen2 + older CPU

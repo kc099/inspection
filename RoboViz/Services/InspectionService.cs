@@ -35,13 +35,16 @@ public class InspectionService : IDisposable
     public Dictionary<string, MetricThreshold> ThresholdsCam3001 => _thresholdsCam3001;
     public Dictionary<string, MetricThreshold> ThresholdsCam3002 => _thresholdsCam3002;
 
+    private readonly string _cam1GeoMethod;
+
     public InspectionService(string maskrcnnModelPath, float scoreThreshold = 0.5f,
         bool useGpu = true, IProgress<string>? progress = null,
-        string modelName = "Model 2")
+        string modelName = "Model 2", string cam1GeoMethod = "opencv")
     {
         _maskrcnn = new MaskRCNNDetector(maskrcnnModelPath, useGpu, progress);
         _scoreThreshold = scoreThreshold;
         _currentModel = modelName;
+        _cam1GeoMethod = cam1GeoMethod;
         (_thresholdsCam3001, _thresholdsCam3002) = LoadThresholdsForModel(modelName);
     }
 
@@ -77,9 +80,12 @@ public class InspectionService : IDisposable
         out string geoVerdict, int slot = 0)
     {
         var geoSw = Stopwatch.StartNew();
-        var geoResult = slot == 1
+        bool useYoloForSlot0 = slot == 0 &&
+            string.Equals(_cam1GeoMethod, "yolo", StringComparison.OrdinalIgnoreCase);
+        var geoResult = (slot == 1 || useYoloForSlot0)
             ? OringMeasurement.MeasureCam2(rawImage)
             : OringMeasurement.Measure(rawImage);
+        Debug.WriteLine($"[Geo] slot={slot}, method={(slot == 1 || useYoloForSlot0 ? "YOLO" : "OpenCV")}");
         long geoMs = geoSw.ElapsedMilliseconds;
 
         if (geoResult == null)
@@ -112,7 +118,7 @@ public class InspectionService : IDisposable
         {
             result.Verdict = geoVerdict;
             result.FailReasons = failReasons;
-            result.OverlayImage = slot == 1
+            result.OverlayImage = (slot == 1 || useYoloForSlot0)
                 ? OringMeasurement.DrawContourOverlayCam2(rawImage, geoResult)
                 : OringMeasurement.DrawGeometricOverlay(rawImage, geoResult);
             result.TotalMs = totalSw.ElapsedMilliseconds;

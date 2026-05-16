@@ -37,6 +37,13 @@ public class TriggerConfig
     public string CommunicationMode { get; set; } = "modbus";
 
     /// <summary>
+    /// Geometric measurement method for CAM 1 (slot 0).
+    /// "opencv" = absdiff mask + contour hierarchy (default).
+    /// "yolo"   = same YOLO11n-seg contour model used by CAM 2.
+    /// </summary>
+    public string Cam1GeoMethod { get; set; } = "opencv";
+
+    /// <summary>
     /// HTTP endpoints for each logical output channel.
     /// The app POSTs plain-text "1" to activate and "0" to deactivate.
     /// </summary>

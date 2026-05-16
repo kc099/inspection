@@ -8,6 +8,7 @@
   "CaptureDelayMs": 400,
   "PollIntervalMs": 200,
   "CommunicationMode": "http",
+  "Cam1GeoMethod": "yolo",
   "CameraTriggerMode": "hardware",
   "OutputCoils": {
     "Cam1_ReworkCoil": 4001,

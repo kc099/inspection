@@ -175,6 +175,22 @@ public class TriggerService : IDisposable
     private void SetReady(int triggerGroup, bool ready)
     {
         var channel = triggerGroup == 1 ? OutputChannel.ReadyT1 : OutputChannel.ReadyT2;
+
+        // For HTTP mode: fire-and-forget so the consumer thread is never blocked
+        // waiting for PCB response during camera streaming.
+        // For Modbus mode: keep synchronous (bus lock already serialises writes).
+        if (string.Equals(_config.CommunicationMode, "http", StringComparison.OrdinalIgnoreCase))
+        {
+            _ = Task.Run(() =>
+            {
+                if (!_outputs.Write(channel, ready))
+                    Debug.WriteLine($"[Trigger] Ready_T{triggerGroup}={(ready ? 1 : 0)} HTTP write FAILED: {_outputs.LastError}");
+                else
+                    Debug.WriteLine($"[Trigger] Ready_T{triggerGroup}={(ready ? 1 : 0)} HTTP OK");
+            });
+            return;
+        }
+
         if (!_outputs.Write(channel, ready))
         {
             Debug.WriteLine($"[Trigger] Ready_T{triggerGroup}={(ready ? 1 : 0)} write FAILED: {_outputs.LastError}");
@@ -206,7 +222,7 @@ public class TriggerService : IDisposable
         }
 
         var triggerType = triggerGroup == 1 ? TriggerType.Trigger1 : TriggerType.Trigger2;
-        Debug.WriteLine($"[Trigger] Group {triggerGroup} sentinel: CAM {sentinel.Slot + 1} (device {sentinel.DeviceIndex})");
+        Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 1 — Sentinel armed: CAM {sentinel.Slot + 1} (device {sentinel.DeviceIndex}), blocking on WaitForNewFrame...");
 
         while (_running)
         {
@@ -214,19 +230,23 @@ public class TriggerService : IDisposable
             // 2 s internal timeout used only for clean shutdown; no spurious processing on timeout.
             var frame = _cameras?.WaitForNewFrame(sentinel.Slot, timeoutMs: 2000);
 
-            if (frame == null) continue; // timeout — check _running and wait again
+            if (frame == null)
+            {
+                Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 1 — WaitForNewFrame timeout (2000ms), _running={_running}, re-waiting...");
+                continue;
+            }
 
             frame.Dispose(); // full frames grabbed later in ProcessTrigger
 
             var arrivalTime = DateTime.Now;
-            Debug.WriteLine($"[Profiling] Group {triggerGroup} CAM {sentinel.Slot + 1}: frame arrived {arrivalTime:HH:mm:ss.fff}");
+            Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 1 — HW trigger fired, frame arrived at {arrivalTime:HH:mm:ss.fff}");
 
             try
             {
                 if (_queues.TryGetValue(triggerGroup, out var queue))
                 {
                     queue.Add(new TriggerEvent(triggerType, arrivalTime));
-                    Debug.WriteLine($"[Profiling] Group {triggerGroup}: TriggerEvent queued at {DateTime.Now:HH:mm:ss.fff}");
+                    Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 1 — TriggerEvent enqueued at {DateTime.Now:HH:mm:ss.fff} (queue depth ~{queue.Count})");
                 }
             }
             catch (InvalidOperationException)
@@ -264,8 +284,8 @@ public class TriggerService : IDisposable
         int triggerGroup = trigger.Type == TriggerType.Trigger1 ? 1 : 2;
         string label = $"Trigger {triggerGroup}";
 
-        // Drop the READY coil for this group: we are now busy. Goes back to 1
-        // in the finally block below, regardless of which exit path is taken.
+        Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 2 — Event dequeued at {tDequeue:HH:mm:ss.fff} (queue latency: {queueLatencyMs:F1}ms)");
+        Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 2 — Sending READY=0 (system busy)");
         SetReady(triggerGroup, false);
 
         try
@@ -274,7 +294,7 @@ public class TriggerService : IDisposable
         }
         finally
         {
-            // Re-arm READY: this group is idle again and will accept the next trigger.
+            Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 6 — Batch complete, sending READY=1 (system idle)");
             SetReady(triggerGroup, true);
         }
     }
@@ -282,7 +302,7 @@ public class TriggerService : IDisposable
     private void ProcessTriggerCore(TriggerEvent trigger, int triggerGroup, string label,
         DateTime tDequeue, double queueLatencyMs)
     {
-        Debug.WriteLine($"[Profiling] ???? {label} dequeued {tDequeue:HH:mm:ss.fff}  (queue latency: {queueLatencyMs:F1} ms) ????");
+        Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 2 — ProcessTriggerCore entered (queue latency: {queueLatencyMs:F1}ms)");
 
         // Find camera slots assigned to this trigger group
         var slotsForTrigger = _cameraSlots
@@ -290,9 +310,11 @@ public class TriggerService : IDisposable
             .OrderBy(c => c.CaptureDelayMs)
             .ToArray();
 
+        Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 3 — Starting frame capture for {slotsForTrigger.Length} camera(s)");
+
         if (slotsForTrigger.Length == 0)
         {
-        Debug.WriteLine($"[Trigger] {label}: no cameras assigned.");
+            Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 3 — ABORT: no cameras assigned to this trigger group.");
             _onResult(new TriggerResultEvent
             {
                 Type = trigger.Type,
@@ -305,14 +327,14 @@ public class TriggerService : IDisposable
             return;
         }
 
-        Debug.WriteLine($"[Trigger] Processing {label} ({slotsForTrigger.Length} cameras) at {DateTime.Now:HH:mm:ss.fff}");
+        Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 3 — cameras={(_cameras == null ? "NULL" : "OK")}, inspection={(_inspection == null ? "NULL" : "OK")}, IsStreaming={_cameras?.IsStreaming}, IsHardwareTrigger={_cameras?.IsHardwareTrigger}");
 
         if (_cameras == null || _inspection == null)
         {
             string reason = _cameras == null && _inspection == null ? "cameras AND model null"
                 : _cameras == null ? "cameras null"
                 : "model null";
-            Debug.WriteLine($"[Trigger] {label} — {reason}, skipping inference.");
+            Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 3 — ABORT: {reason}, skipping inference.");
             _onResult(new TriggerResultEvent
             {
                 Type = trigger.Type,
@@ -330,7 +352,7 @@ public class TriggerService : IDisposable
             string reason = !_cameras.IsStreaming
                 ? "cameras are not armed"
                 : "cameras are not in hardware-trigger mode";
-            Debug.WriteLine($"[Trigger] {label} — {reason}, skipping inference.");
+            Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 3 — ABORT: {reason}.");
             _onResult(new TriggerResultEvent
             {
                 Type = trigger.Type,
@@ -356,6 +378,7 @@ public class TriggerService : IDisposable
             // Wait until this camera's delay has elapsed since trigger
             int elapsed = (int)(DateTime.Now - triggerTime).TotalMilliseconds;
             int remaining = slotCfg.CaptureDelayMs - elapsed;
+            Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 3 — CAM {slotCfg.Slot + 1}: elapsed={elapsed}ms, configured delay={slotCfg.CaptureDelayMs}ms, sleeping {Math.Max(0, remaining)}ms");
             if (remaining > 0)
                 Thread.Sleep(remaining);
 
@@ -366,17 +389,22 @@ public class TriggerService : IDisposable
             for (int attempt = 0; attempt < maxRetries; attempt++)
             {
                 frames[i] = _cameras.GetLatestFrame(slotCfg.Slot);
-                if (frames[i] != null) break;
+                if (frames[i] != null)
+                {
+                    Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 3 — CAM {slotCfg.Slot + 1}: frame grabbed on attempt {attempt + 1}");
+                    break;
+                }
+                Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 3 — CAM {slotCfg.Slot + 1}: GetLatestFrame null (attempt {attempt + 1}/{maxRetries}), retrying in {retryDelayMs}ms...");
                 if (attempt < maxRetries - 1)
                     Thread.Sleep(retryDelayMs);
             }
             frameCaptureTimes[i] = swCapture.ElapsedMilliseconds;
 
-            Debug.WriteLine($"[Trigger] CAM {slotCfg.Slot + 1} (delay {slotCfg.CaptureDelayMs}ms): {(frames[i] != null ? "OK" : "NULL")} [{frameCaptureTimes[i]}ms]");
+            Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 3 — CAM {slotCfg.Slot + 1}: result={(frames[i] != null ? $"OK ({frames[i]!.Width}x{frames[i]!.Height})" : "NULL — no frame after all retries")} [{frameCaptureTimes[i]}ms]");
         }
 
         var totalCaptureMs = (DateTime.Now - tCaptureStart).TotalMilliseconds;
-        Debug.WriteLine($"[Profiling] Frame capture done: {totalCaptureMs:F1}ms | per-cam: [{string.Join(", ", frameCaptureTimes.Select(t => $"{t}ms"))}]");
+        Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 3 — All frames captured in {totalCaptureMs:F1}ms | per-cam: [{string.Join(", ", frameCaptureTimes.Select(t => $"{t}ms"))}]");
 
         // Run inference on captured frames.
         // Inferences run in PARALLEL across slots:
@@ -394,12 +422,18 @@ public class TriggerService : IDisposable
         var resultsByIdx = new InspectionResult?[n];
         var perCamTimes = new long[n];
 
+        Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 4 — Starting parallel inference on {n} camera(s) at {tInspStart:HH:mm:ss.fff}");
+
         Parallel.For(0, n, i =>
         {
-            if (frames[i] == null) return;
+            if (frames[i] == null)
+            {
+                Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 4 — CAM {slotsForTrigger[i].Slot + 1}: SKIPPED (frame is null)");
+                return;
+            }
             var slotCfg = slotsForTrigger[i];
 
-            Debug.WriteLine($"[Trigger] CAM {slotCfg.Slot + 1} frame: {frames[i]!.Width}x{frames[i]!.Height} px, detector={slotCfg.Detector}");
+            Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 4 — CAM {slotCfg.Slot + 1}: inference START ({frames[i]!.Width}x{frames[i]!.Height}px, skipGeo={slotCfg.SkipGeoMeasurement})");
             var swInspect = Stopwatch.StartNew();
             var result = _inspection.InspectMaskRCNN(frames[i]!, triggerGroup,
                 slotCfg.SkipGeoMeasurement, slot: slotCfg.Slot);
@@ -408,9 +442,8 @@ public class TriggerService : IDisposable
             perCamTimes[i] = inspectMs;
             resultsByIdx[i] = result;
 
-            Debug.WriteLine($"[Trigger] CAM {slotCfg.Slot + 1} => {result.Verdict} | " +
-                $"total={result.TotalMs}ms geo={result.GeoMs}ms infer={result.InferenceMs}ms (wall: {inspectMs}ms)" +
-                $" | defect={result.HasDefect} topScore={result.TopScore:F3}" +
+            Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 4 — CAM {slotCfg.Slot + 1}: inference DONE in {inspectMs}ms => verdict={result.Verdict}" +
+                $" | geo={result.GeoMs}ms infer={result.InferenceMs}ms | defect={result.HasDefect} topScore={result.TopScore:F3}" +
                 (result.FailReasons.Count > 0 ? $" | reasons=[{string.Join(", ", result.FailReasons)}]" : "") +
                 (result.ErrorMessage != null ? $" | ERROR: {result.ErrorMessage}" : ""));
         });
@@ -433,9 +466,8 @@ public class TriggerService : IDisposable
         long sumMs = perCamTimes.Sum();
         long maxMs = n > 0 ? perCamTimes.Max() : 0;
         double speedup = maxMs > 0 ? (double)sumMs / maxMs : 0;
-        Debug.WriteLine($"[Profiling] Inspection done (parallel): {totalInspMs:F1}ms wall (batch timer: {batchMs}ms) | per-cam: [{string.Join(", ", perCamTimes.Select(t => $"{t}ms"))}]");
-        Debug.WriteLine($"[Profiling] Sum-if-sequential: {sumMs}ms | parallel max: {maxMs}ms | effective speedup: {speedup:F1}x");
-        Debug.WriteLine($"[Trigger] {label} batch complete: {batchMs}ms | verdicts=[{string.Join(", ", results.Select(r => r.Verdict))}]");
+        Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 4 — Inference complete: wall={totalInspMs:F1}ms batch={batchMs}ms | sequential-equiv={sumMs}ms | speedup={speedup:F1}x");
+        Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 4 — Verdicts: [{string.Join(", ", results.Select(r => $"CAM{slotList[Array.IndexOf(results, r)] + 1}={r.Verdict}"))}]");
 
         // Dispose frames not used as overlay
         for (int i = 0; i < frameList.Count; i++)
@@ -444,7 +476,7 @@ public class TriggerService : IDisposable
                 frameList[i].Dispose();
         }
 
-        // Send results to UI immediately — don't block the consumer on Modbus coil writes
+        Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 5 — Posting {results.Length} result(s) to UI");
         _onResult(new TriggerResultEvent
         {
             Type = trigger.Type,
@@ -455,16 +487,16 @@ public class TriggerService : IDisposable
             ModbusError = null,
             CoilsActivated = null,
         });
+        Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 5 — UI callback done, firing rejection coil writes (fire-and-forget)");
 
-        // Write rejection output coils fire-and-forget so consumer is never blocked
-        // by Modbus timeouts (~1.5 s per timeout would starve the trigger queue)
         int capturedGroup = triggerGroup;
         var capturedResults = results;
         var capturedSlots = slotList.ToList();
         _ = Task.Run(() =>
         {
+            Debug.WriteLine($"[Pipeline-G{capturedGroup}] STAGE 5 — WriteRejectionCoils starting");
             var (ok, err, coils) = WriteRejectionCoils(capturedGroup, capturedResults, capturedSlots);
-            Debug.WriteLine($"[Trigger] Coils: group={capturedGroup}, activated=[{coils ?? "none"}], ok={ok}, err={err ?? "no coil needed"}");
+            Debug.WriteLine($"[Pipeline-G{capturedGroup}] STAGE 5 — WriteRejectionCoils done: activated=[{coils ?? "none"}], ok={ok}, err={err ?? "no coil needed"}");
         });
     }
 
