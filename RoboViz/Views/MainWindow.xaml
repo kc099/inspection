@@ -111,21 +111,22 @@
                 <ColumnDefinition Width="35*" MinWidth="480"/>
             </Grid.ColumnDefinitions>
 
-            <!-- Left: 2x2 Image Grid -->
+            <!-- Left: 3x2 Image Grid -->
             <Grid Grid.Column="0" Margin="0,0,16,0">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="*"/>
-                    <RowDefinition x:Name="BottomCamRow" Height="*"/>
+                    <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
 
-                <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource ImageFrame}">
+                <Border x:Name="CamBorder0" Grid.Row="0" Grid.Column="0" Style="{StaticResource ImageFrame}">
                     <Grid>
                         <Image x:Name="ImageDisplay0" Stretch="Uniform" Margin="6"/>
-                    <TextBlock x:Name="CamLabel0" Text="CAM 1 [MaskRCNN]" FontFamily="{StaticResource Montserrat}"
+                        <TextBlock x:Name="CamLabel0" Text="CAM 1 [MaskRCNN]" FontFamily="{StaticResource Montserrat}"
                                    FontSize="10" FontWeight="Bold" Foreground="#FF505058"
                                    HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10,8"/>
                         <TextBlock x:Name="VerdictLabel0" Text=""
@@ -140,10 +141,10 @@
                     </Grid>
                 </Border>
 
-                <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource ImageFrame}">
+                <Border x:Name="CamBorder1" Grid.Row="0" Grid.Column="1" Style="{StaticResource ImageFrame}">
                     <Grid>
                         <Image x:Name="ImageDisplay1" Stretch="Uniform" Margin="6"/>
-                    <TextBlock x:Name="CamLabel1" Text="CAM 2 [MaskRCNN]" FontFamily="{StaticResource Montserrat}"
+                        <TextBlock x:Name="CamLabel1" Text="CAM 2 [MaskRCNN]" FontFamily="{StaticResource Montserrat}"
                                    FontSize="10" FontWeight="Bold" Foreground="#FF505058"
                                    HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10,8"/>
                         <TextBlock x:Name="VerdictLabel1" Text=""
@@ -158,10 +159,10 @@
                     </Grid>
                 </Border>
 
-                <Border x:Name="CamBorder2" Grid.Row="1" Grid.Column="0" Style="{StaticResource ImageFrame}">
+                <Border x:Name="CamBorder2" Grid.Row="0" Grid.Column="2" Style="{StaticResource ImageFrame}">
                     <Grid>
                         <Image x:Name="ImageDisplay2" Stretch="Uniform" Margin="6"/>
-                    <TextBlock x:Name="CamLabel2" Text="CAM 3 [MaskRCNN]" FontFamily="{StaticResource Montserrat}"
+                        <TextBlock x:Name="CamLabel2" Text="CAM 3 [MaskRCNN]" FontFamily="{StaticResource Montserrat}"
                                    FontSize="10" FontWeight="Bold" Foreground="#FF505058"
                                    HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10,8"/>
                         <TextBlock x:Name="VerdictLabel2" Text=""
@@ -176,10 +177,10 @@
                     </Grid>
                 </Border>
 
-                <Border x:Name="CamBorder3" Grid.Row="1" Grid.Column="1" Style="{StaticResource ImageFrame}">
+                <Border x:Name="CamBorder3" Grid.Row="1" Grid.Column="0" Style="{StaticResource ImageFrame}">
                     <Grid>
                         <Image x:Name="ImageDisplay3" Stretch="Uniform" Margin="6"/>
-                    <TextBlock x:Name="CamLabel3" Text="CAM 4 [MaskRCNN]" FontFamily="{StaticResource Montserrat}"
+                        <TextBlock x:Name="CamLabel3" Text="CAM 4 [MaskRCNN]" FontFamily="{StaticResource Montserrat}"
                                    FontSize="10" FontWeight="Bold" Foreground="#FF505058"
                                    HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10,8"/>
                         <TextBlock x:Name="VerdictLabel3" Text=""
@@ -188,6 +189,42 @@
                                    HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,8,10,0"
                                    Padding="6,2"/>
                         <TextBlock x:Name="ScoreLabel3" Text=""
+                                   FontFamily="{StaticResource ShareTechMono}"
+                                   FontSize="10" Foreground="#FFB0BEC5"
+                                   HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="10,0,0,8"/>
+                    </Grid>
+                </Border>
+
+                <Border x:Name="CamBorder4" Grid.Row="1" Grid.Column="1" Style="{StaticResource ImageFrame}">
+                    <Grid>
+                        <Image x:Name="ImageDisplay4" Stretch="Uniform" Margin="6"/>
+                        <TextBlock x:Name="CamLabel4" Text="CAM 5 [MaskRCNN]" FontFamily="{StaticResource Montserrat}"
+                                   FontSize="10" FontWeight="Bold" Foreground="#FF505058"
+                                   HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10,8"/>
+                        <TextBlock x:Name="VerdictLabel4" Text=""
+                                   FontFamily="{StaticResource Orbitron}"
+                                   FontSize="14" FontWeight="Bold" Foreground="White"
+                                   HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,8,10,0"
+                                   Padding="6,2"/>
+                        <TextBlock x:Name="ScoreLabel4" Text=""
+                                   FontFamily="{StaticResource ShareTechMono}"
+                                   FontSize="10" Foreground="#FFB0BEC5"
+                                   HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="10,0,0,8"/>
+                    </Grid>
+                </Border>
+
+                <Border x:Name="CamBorder5" Grid.Row="1" Grid.Column="2" Style="{StaticResource ImageFrame}">
+                    <Grid>
+                        <Image x:Name="ImageDisplay5" Stretch="Uniform" Margin="6"/>
+                        <TextBlock x:Name="CamLabel5" Text="CAM 6 [MaskRCNN]" FontFamily="{StaticResource Montserrat}"
+                                   FontSize="10" FontWeight="Bold" Foreground="#FF505058"
+                                   HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10,8"/>
+                        <TextBlock x:Name="VerdictLabel5" Text=""
+                                   FontFamily="{StaticResource Orbitron}"
+                                   FontSize="14" FontWeight="Bold" Foreground="White"
+                                   HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,8,10,0"
+                                   Padding="6,2"/>
+                        <TextBlock x:Name="ScoreLabel5" Text=""
                                    FontFamily="{StaticResource ShareTechMono}"
                                    FontSize="10" Foreground="#FFB0BEC5"
                                    HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="10,0,0,8"/>
@@ -238,7 +275,7 @@
                             <ToggleButton x:Name="Btn4Cam" Style="{StaticResource ModelToggle}"
                                           IsChecked="True" Width="70" Height="30" Margin="6,0,0,0"
                                           Checked="Cam4_Click">
-                                <TextBlock Text="4 CAM" FontFamily="{StaticResource Montserrat}"
+                                <TextBlock Text="6 CAM" FontFamily="{StaticResource Montserrat}"
                                            FontSize="11" FontWeight="SemiBold"/>
                             </ToggleButton>
                         </StackPanel>

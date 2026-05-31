@@ -10,6 +10,12 @@
   "CommunicationMode": "http",
   "Cam1GeoMethod": "yolo",
   "CameraTriggerMode": "hardware",
+  "FrameLogging": {
+    "Enabled": true,
+    "SaveDefectsOnly": true,
+    "LogsDirectory": "logs",
+    "ImageFormat": "jpg"
+  },
   "OutputCoils": {
     "Cam1_ReworkCoil": 4001,
     "Cam1_RejectCoil": 4002,

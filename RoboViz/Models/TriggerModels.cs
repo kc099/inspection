@@ -62,13 +62,15 @@ public class TriggerConfig
     public OutputCoilConfig OutputCoils { get; set; } = new();
 
     /// <summary>
-    /// Per-camera slot configuration. Default: 3 cameras on Trigger 1, 1 on Trigger 2.
+    /// Defect frame logging configuration.
     /// </summary>
+    public FrameLoggingConfig FrameLogging { get; set; } = new();
+
     /// <summary>
     /// Per-camera slot configuration. Default mapping:
     ///   CAM 1 (slot 0)              ? Trigger 1, full geo (cam1 OpenCV pipeline) + MaskRCNN
     ///   CAM 2 (slot 1)              ? Trigger 2, YOLO-bbox geo + MaskRCNN
-    ///   CAM 3, CAM 4 (slots 2, 3)   ? Trigger 2, NO geo (resize only) + MaskRCNN
+    ///   CAM 3..CAM 6 (slots 2..5)   ? Trigger 2, NO geo (resize only) + MaskRCNN
     /// </summary>
     public CameraSlotConfig[] CameraSlots { get; set; } =
     [
@@ -76,6 +78,8 @@ public class TriggerConfig
         new() { Slot = 1, TriggerGroup = 2, Detector = "MaskRCNN", CaptureDelayMs = 50, SkipGeoMeasurement = false },
         new() { Slot = 2, TriggerGroup = 2, Detector = "MaskRCNN", CaptureDelayMs = 50, SkipGeoMeasurement = true  },
         new() { Slot = 3, TriggerGroup = 2, Detector = "MaskRCNN", CaptureDelayMs = 50, SkipGeoMeasurement = true  },
+        new() { Slot = 4, TriggerGroup = 2, Detector = "MaskRCNN", CaptureDelayMs = 50, SkipGeoMeasurement = true  },
+        new() { Slot = 5, TriggerGroup = 2, Detector = "MaskRCNN", CaptureDelayMs = 50, SkipGeoMeasurement = true  },
     ];
 
     /// <summary>Coil address for trigger group 1.</summary>
@@ -227,4 +231,12 @@ public class TriggerResultEvent
     public string? ModbusError { get; init; }
     /// <summary>Which output coils were activated (e.g. "Cam1_Rework@3010").</summary>
     public string? CoilsActivated { get; init; }
+}
+
+public class FrameLoggingConfig
+{
+    public bool Enabled { get; set; } = true;
+    public bool SaveDefectsOnly { get; set; } = true;
+    public string LogsDirectory { get; set; } = "logs";
+    public string ImageFormat { get; set; } = "jpg";
 }

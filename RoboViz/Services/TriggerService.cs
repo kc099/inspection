@@ -22,6 +22,7 @@ public class TriggerService : IDisposable
     private readonly TriggerConfig _config;
     private readonly CameraSlotConfig[] _cameraSlots;
     private readonly Action<TriggerResultEvent> _onResult;
+    private readonly FrameLoggingService? _frameLogger;
 
     // One queue + one consumer per trigger group, so groups process in parallel.
     private readonly Dictionary<int, BlockingCollection<TriggerEvent>> _queues = [];
@@ -53,6 +54,7 @@ public class TriggerService : IDisposable
         _config = config;
         _cameraSlots = cameraSlots;
         _onResult = onResult;
+        _frameLogger = config.FrameLogging?.Enabled == true ? new FrameLoggingService(config.FrameLogging) : null;
         _ = onPollStatus; // Poll callback retained in the public signature for backward compatibility.
 
         string camStatus = cameras == null ? "NULL" : (cameras.IsStreaming ? "streaming" : "initialized");
@@ -469,6 +471,8 @@ public class TriggerService : IDisposable
         Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 4 — Inference complete: wall={totalInspMs:F1}ms batch={batchMs}ms | sequential-equiv={sumMs}ms | speedup={speedup:F1}x");
         Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 4 — Verdicts: [{string.Join(", ", results.Select(r => $"CAM{slotList[Array.IndexOf(results, r)] + 1}={r.Verdict}"))}]");
 
+        SaveDefectFrames(results, frameList, slotList, triggerGroup);
+
         // Dispose frames not used as overlay
         for (int i = 0; i < frameList.Count; i++)
         {
@@ -498,6 +502,26 @@ public class TriggerService : IDisposable
             var (ok, err, coils) = WriteRejectionCoils(capturedGroup, capturedResults, capturedSlots);
             Debug.WriteLine($"[Pipeline-G{capturedGroup}] STAGE 5 — WriteRejectionCoils done: activated=[{coils ?? "none"}], ok={ok}, err={err ?? "no coil needed"}");
         });
+    }
+
+    private void SaveDefectFrames(
+        InspectionResult[] results,
+        System.Collections.Generic.List<Bitmap> frames,
+        System.Collections.Generic.List<int> slots,
+        int triggerGroup)
+    {
+        if (_frameLogger == null) return;
+
+        for (int i = 0; i < results.Length && i < frames.Count && i < slots.Count; i++)
+        {
+            string verdict = results[i].Verdict ?? "UNKNOWN";
+            if (!_frameLogger.ShouldSave(verdict))
+                continue;
+
+            string? path = _frameLogger.SaveFrame(frames[i], slots[i], verdict);
+            if (!string.IsNullOrEmpty(path))
+                Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 4 — Defect frame saved: {path}");
+        }
     }
 
     /// <summary>
@@ -630,5 +654,6 @@ public class TriggerService : IDisposable
             try { q.Dispose(); } catch { }
         }
         _queues.Clear();
+        _frameLogger?.Dispose();
     }
 }

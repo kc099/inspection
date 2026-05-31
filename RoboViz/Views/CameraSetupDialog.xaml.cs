@@ -15,6 +15,7 @@ public partial class CameraSetupDialog : Window
     private readonly TextBox[] _delays;
     private readonly ushort _coilAddr1;
     private readonly ushort _coilAddr2;
+    private const int SlotCount = 6;
 
     /// <summary>Result configs — populated on Start click, null if cancelled.</summary>
     public CameraSlotConfig[]? ResultConfigs { get; private set; }
@@ -24,10 +25,10 @@ public partial class CameraSetupDialog : Window
         InitializeComponent();
         _cameraDescriptions = cameraDescriptions;
 
-        _combos = [CmbCam0, CmbCam1, CmbCam2, CmbCam3];
-        _trig1  = [Trig1_0, Trig1_1, Trig1_2, Trig1_3];
-        _trig2  = [Trig2_0, Trig2_1, Trig2_2, Trig2_3];
-        _delays = [TxtDelay0, TxtDelay1, TxtDelay2, TxtDelay3];
+        _combos = [CmbCam0, CmbCam1, CmbCam2, CmbCam3, CmbCam4, CmbCam5];
+        _trig1  = [Trig1_0, Trig1_1, Trig1_2, Trig1_3, Trig1_4, Trig1_5];
+        _trig2  = [Trig2_0, Trig2_1, Trig2_2, Trig2_3, Trig2_4, Trig2_5];
+        _delays = [TxtDelay0, TxtDelay1, TxtDelay2, TxtDelay3, TxtDelay4, TxtDelay5];
 
         // Load coil addresses from trigger config and label the radio buttons
         var trigCfg = TriggerConfig.Load();
@@ -63,7 +64,7 @@ public partial class CameraSetupDialog : Window
 
     private void PopulateCombos()
     {
-        for (int slot = 0; slot < 4; slot++)
+        for (int slot = 0; slot < SlotCount; slot++)
         {
             _combos[slot].Items.Clear();
             _combos[slot].Items.Add("(none)");
@@ -80,7 +81,7 @@ public partial class CameraSetupDialog : Window
         foreach (var cfg in configs)
         {
             int s = cfg.Slot;
-            if (s < 0 || s >= 4) continue;
+            if (s < 0 || s >= SlotCount) continue;
 
             // Restore camera selection
             if (cfg.DeviceIndex >= 0 && cfg.DeviceIndex < _cameraDescriptions.Count)
@@ -88,15 +89,11 @@ public partial class CameraSetupDialog : Window
             else
                 _combos[s].SelectedIndex = 0;
 
-            // Detector is always MaskRCNN (PatchCore option removed)
-
-            // Restore trigger
             if (cfg.TriggerGroup == 2)
                 _trig2[s].IsChecked = true;
             else
                 _trig1[s].IsChecked = true;
 
-            // Restore delay (convert from µs to ms for UI display)
             int delayMs = (int)(cfg.TriggerDelayUs / 1000.0);
             _delays[s].Text = delayMs.ToString();
         }
@@ -104,11 +101,10 @@ public partial class CameraSetupDialog : Window
 
     private CameraSlotConfig[] CollectConfigs()
     {
-        var configs = new CameraSlotConfig[4];
-        for (int s = 0; s < 4; s++)
+        var configs = new CameraSlotConfig[SlotCount];
+        for (int s = 0; s < SlotCount; s++)
         {
             int comboIdx = _combos[s].SelectedIndex;
-            // Parse delay from UI (in ms) and convert to µs for hardware trigger delay
             int delayMs = int.TryParse(_delays[s].Text.Trim(), out int d) ? d : 50;
             configs[s] = new CameraSlotConfig
             {
@@ -116,10 +112,8 @@ public partial class CameraSetupDialog : Window
                 DeviceIndex = comboIdx > 0 ? comboIdx - 1 : -1,
                 Detector = "MaskRCNN",
                 TriggerGroup = _trig2[s].IsChecked == true ? 2 : 1,
-                TriggerDelayUs = delayMs * 1000.0,  // Convert ms to µs for camera hardware delay
-                CaptureDelayMs = 0,                  // Retrieve frame immediately after hardware capture
-                // CAM 3/4 (slots 2/3) are side-view cameras with no visible hole — resize only,
-                // no geometric measurement. CAM 1/2 run their respective geo pipelines.
+                TriggerDelayUs = delayMs * 1000.0,
+                CaptureDelayMs = 0,
                 SkipGeoMeasurement = (s >= 2),
             };
         }

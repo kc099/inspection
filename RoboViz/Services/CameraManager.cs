@@ -20,7 +20,7 @@ public class CameraManager : IDisposable
     /// Camera indices to open (0-based, in enumeration order).
     /// Change these to match your physical camera wiring.
     /// </summary>
-    public static int[] CameraIndices { get; set; } = [0, 1, 2, 3];
+    public static int[] CameraIndices { get; set; } = [0, 1, 2, 3, 4, 5];
 
     public int CameraCount => CameraIndices.Length;
     public bool IsStreaming { get; private set; }

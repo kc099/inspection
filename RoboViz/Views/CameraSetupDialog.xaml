@@ -114,6 +114,8 @@
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
                 <!-- Header -->
@@ -177,6 +179,34 @@
                 </StackPanel>
                 <StackPanel Grid.Row="5" Grid.Column="4" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
                     <TextBox x:Name="TxtDelay3" Text="50" Style="{StaticResource DelayBox}"/>
+                    <TextBlock Text="ms" Foreground="#FF6E6E76" FontSize="10" VerticalAlignment="Center" Margin="2,0,0,0"
+                               FontFamily="{StaticResource Montserrat}"/>
+                </StackPanel>
+
+                <!-- CAM 5 -->
+                <TextBlock Grid.Row="6" Grid.Column="0" Text="CAM 5" Style="{StaticResource SlotLabel}" Margin="0,6,0,0"/>
+                <ComboBox  Grid.Row="6" Grid.Column="1" x:Name="CmbCam4" Style="{StaticResource SlotCombo}" Margin="4,6,4,0"/>
+                <TextBlock Grid.Row="6" Grid.Column="2" Text="MaskRCNN" Style="{StaticResource SlotRadio}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                <StackPanel Grid.Row="6" Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                    <RadioButton x:Name="Trig1_4" Content="T1" GroupName="Trig4" Style="{StaticResource SlotRadio}"/>
+                    <RadioButton x:Name="Trig2_4" Content="T2" GroupName="Trig4" IsChecked="True" Style="{StaticResource SlotRadio}"/>
+                </StackPanel>
+                <StackPanel Grid.Row="6" Grid.Column="4" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                    <TextBox x:Name="TxtDelay4" Text="50" Style="{StaticResource DelayBox}"/>
+                    <TextBlock Text="ms" Foreground="#FF6E6E76" FontSize="10" VerticalAlignment="Center" Margin="2,0,0,0"
+                               FontFamily="{StaticResource Montserrat}"/>
+                </StackPanel>
+
+                <!-- CAM 6 -->
+                <TextBlock Grid.Row="7" Grid.Column="0" Text="CAM 6" Style="{StaticResource SlotLabel}" Margin="0,6,0,0"/>
+                <ComboBox  Grid.Row="7" Grid.Column="1" x:Name="CmbCam5" Style="{StaticResource SlotCombo}" Margin="4,6,4,0"/>
+                <TextBlock Grid.Row="7" Grid.Column="2" Text="MaskRCNN" Style="{StaticResource SlotRadio}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                <StackPanel Grid.Row="7" Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                    <RadioButton x:Name="Trig1_5" Content="T1" GroupName="Trig5" Style="{StaticResource SlotRadio}"/>
+                    <RadioButton x:Name="Trig2_5" Content="T2" GroupName="Trig5" IsChecked="True" Style="{StaticResource SlotRadio}"/>
+                </StackPanel>
+                <StackPanel Grid.Row="7" Grid.Column="4" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                    <TextBox x:Name="TxtDelay5" Text="50" Style="{StaticResource DelayBox}"/>
                     <TextBlock Text="ms" Foreground="#FF6E6E76" FontSize="10" VerticalAlignment="Center" Margin="2,0,0,0"
                                FontFamily="{StaticResource Montserrat}"/>
                 </StackPanel>

@@ -53,43 +53,48 @@ public static class OringMeasurement
 
         using var mask = BuildMask(gray, bgValue, threshold);
 
+
         // find_contours with RETR_CCOMP — gives 2-level hierarchy
         Cv2.FindContours(mask, out OpenCvSharp.Point[][] contours, out HierarchyIndex[] hierarchy,
             RetrievalModes.CComp, ContourApproximationModes.ApproxNone);
 
-        if (contours.Length == 0 || hierarchy.Length == 0)
-        {
-            Debug.WriteLine($"[Measure] FAIL: no contours found. Image={image.Width}x{image.Height}, bgValue={bgValue}, threshold={threshold}, fgPixels={Cv2.CountNonZero(mask)}");
-            return null;
-        }
+        int outerIdx = FindLargestContourIdx(contours);
+        OpenCvSharp.Point[]? inner = outerIdx >= 0 ? FindLargestChild(contours, hierarchy, outerIdx) : null;
 
-        // Outer = largest contour by area
-        int outerIdx = -1;
-        double maxArea = 0;
-        for (int i = 0; i < contours.Length; i++)
+        // Otsu fallback: forms a boundary for ANY component regardless of background intensity.
+        // Only activates when absdiff mask fails (lighting drift, cut part, background mismatch).
+        if (outerIdx < 0 || inner == null)
         {
-            double a = Cv2.ContourArea(contours[i]);
-            if (a > maxArea) { maxArea = a; outerIdx = i; }
-        }
-        if (outerIdx < 0) return null;
-        var outer = contours[outerIdx];
+            Debug.WriteLine($"[Measure] Primary mask failed (outerIdx={outerIdx}, inner={inner != null}), " +
+                $"fgPixels={Cv2.CountNonZero(mask)} - retrying with Otsu fallback.");
 
-        // Inner = largest child of outer
-        OpenCvSharp.Point[]? inner = null;
-        double bestInnerArea = 0;
-        for (int i = 0; i < contours.Length; i++)
-        {
-            if (hierarchy[i].Parent == outerIdx)
+            using var otsuMask = BuildMaskOtsu(gray);
+            Cv2.FindContours(otsuMask, out OpenCvSharp.Point[][] otsuContours, out HierarchyIndex[] otsuHierarchy,
+                RetrievalModes.CComp, ContourApproximationModes.ApproxNone);
+
+            int otsuOuterIdx = FindLargestContourIdx(otsuContours);
+            OpenCvSharp.Point[]? otsuInner = otsuOuterIdx >= 0
+                ? FindLargestChild(otsuContours, otsuHierarchy, otsuOuterIdx)
+                : null;
+
+            if (otsuOuterIdx >= 0 && otsuInner != null)
             {
-                double a = Cv2.ContourArea(contours[i]);
-                if (a > bestInnerArea) { bestInnerArea = a; inner = contours[i]; }
+                Debug.WriteLine($"[Measure] Otsu fallback succeeded: " +
+                    $"outerArea={Cv2.ContourArea(otsuContours[otsuOuterIdx]):F0}, " +
+                    $"innerArea={Cv2.ContourArea(otsuInner):F0}");
+                contours  = otsuContours;
+                hierarchy = otsuHierarchy;
+                outerIdx  = otsuOuterIdx;
+                inner     = otsuInner;
+            }
+            else
+            {
+                Debug.WriteLine("[Measure] Otsu fallback also failed - returning null.");
+                return null;
             }
         }
-        if (inner == null)
-        {
-            Debug.WriteLine($"[Measure] FAIL: no inner contour (hole) found. contours={contours.Length}, outerArea={maxArea:F0}");
-            return null;
-        }
+
+        var outer = contours[outerIdx];
 
         // Fit circles via minimum enclosing circle
         Cv2.MinEnclosingCircle(outer, out var outerCenter, out float outerRadius);
@@ -121,6 +126,25 @@ public static class OringMeasurement
             OuterContour = outer,
             InnerContour = inner,
         };
+    }
+
+    /// <summary>
+    /// Returns true if any point of the contour lies within <paramref name="margin"/> pixels
+    /// of any image edge - indicating the O-ring is clipped by the frame boundary.
+    /// A clipped contour produces unreliable geometry metrics; the caller should reject immediately.
+    /// </summary>
+    public static bool IsContourClipped(OpenCvSharp.Point[] contour, int imgW, int imgH, int margin = 8)
+    {
+        foreach (var p in contour)
+        {
+            if (p.X <= margin || p.Y <= margin ||
+                p.X >= imgW - margin || p.Y >= imgH - margin)
+            {
+                Debug.WriteLine($"[IsContourClipped] Clip at ({p.X},{p.Y}), image={imgW}x{imgH}, margin={margin}");
+                return true;
+            }
+        }
+        return false;
     }
 
     public static void LoadCam2Background(string bmpPath)
@@ -270,6 +294,75 @@ public static class OringMeasurement
         }
 
         return binary;
+    }
+
+    /// <summary>
+    /// Fallback mask using Otsu's adaptive thresholding.
+    /// Works on any component regardless of background intensity.
+    /// Used when the calibrated absdiff mask fails to find usable contours.
+    /// </summary>
+    private static Mat BuildMaskOtsu(Mat gray)
+    {
+        using var blurred = new Mat();
+        Cv2.GaussianBlur(gray, blurred, new OpenCvSharp.Size(5, 5), 0);
+
+        var binary = new Mat();
+        Cv2.Threshold(blurred, binary, 0, 255, ThresholdTypes.Binary | ThresholdTypes.Otsu);
+
+        if (Cv2.Mean(binary).Val0 / 255.0 > 0.75)
+            Cv2.BitwiseNot(binary, binary);
+
+        using var kernel = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(7, 7));
+        Cv2.MorphologyEx(binary, binary, MorphTypes.Close, kernel, iterations: 2);
+        Cv2.MorphologyEx(binary, binary, MorphTypes.Open,  kernel, iterations: 1);
+
+        using var labels    = new Mat();
+        using var stats     = new Mat();
+        using var centroids = new Mat();
+        int n = Cv2.ConnectedComponentsWithStats(binary, labels, stats, centroids);
+        if (n > 1)
+        {
+            int bestLabel = 1, bestArea = 0;
+            for (int i = 1; i < n; i++)
+            {
+                int area = stats.At<int>(i, 4);
+                if (area > bestArea) { bestArea = area; bestLabel = i; }
+            }
+            using var eqMask = new Mat();
+            Cv2.Compare(labels, bestLabel, eqMask, CmpType.EQ);
+            eqMask.ConvertTo(binary, MatType.CV_8UC1, 255);
+        }
+        return binary;
+    }
+
+    /// <summary>Returns the index of the largest contour by area, or -1 if none.</summary>
+    private static int FindLargestContourIdx(OpenCvSharp.Point[][] contours)
+    {
+        int idx = -1;
+        double maxArea = 0;
+        for (int i = 0; i < contours.Length; i++)
+        {
+            double a = Cv2.ContourArea(contours[i]);
+            if (a > maxArea) { maxArea = a; idx = i; }
+        }
+        return idx;
+    }
+
+    /// <summary>Returns the largest child contour of parentIdx in the hierarchy, or null.</summary>
+    private static OpenCvSharp.Point[]? FindLargestChild(
+        OpenCvSharp.Point[][] contours, HierarchyIndex[] hierarchy, int parentIdx)
+    {
+        OpenCvSharp.Point[]? best = null;
+        double bestArea = 0;
+        for (int i = 0; i < contours.Length; i++)
+        {
+            if (hierarchy[i].Parent == parentIdx)
+            {
+                double a = Cv2.ContourArea(contours[i]);
+                if (a > bestArea) { bestArea = a; best = contours[i]; }
+            }
+        }
+        return best;
     }
 
     /// <summary>

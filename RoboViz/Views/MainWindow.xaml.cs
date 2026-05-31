@@ -26,11 +26,12 @@ namespace RoboViz
         private bool _isStreaming;
 
         private System.Windows.Controls.Image[] _imageDisplays = null!;
+        private Border[] _camBorders = null!;
         private TextBlock[] _verdictLabels = null!;
         private TextBlock[] _scoreLabels = null!;
         private TextBlock[] _camLabels = null!;
-        private const int FrameCount = 4;
-        private int _activeFrameCount = 4;
+        private const int FrameCount = 6;
+        private int _activeFrameCount = 6;
 
         // Per-camera configuration (set via CameraSetupDialog, persisted to camera_slots.json)
         private CameraSlotConfig[] _cameraSlots = LoadOrDefaultSlots();
@@ -74,10 +75,11 @@ namespace RoboViz
         public MainWindow()
         {
             InitializeComponent();
-            _imageDisplays = [ImageDisplay0, ImageDisplay1, ImageDisplay2, ImageDisplay3];
-            _verdictLabels = [VerdictLabel0, VerdictLabel1, VerdictLabel2, VerdictLabel3];
-            _scoreLabels = [ScoreLabel0, ScoreLabel1, ScoreLabel2, ScoreLabel3];
-            _camLabels = [CamLabel0, CamLabel1, CamLabel2, CamLabel3];
+            _imageDisplays = [ImageDisplay0, ImageDisplay1, ImageDisplay2, ImageDisplay3, ImageDisplay4, ImageDisplay5];
+            _camBorders = [CamBorder0, CamBorder1, CamBorder2, CamBorder3, CamBorder4, CamBorder5];
+            _verdictLabels = [VerdictLabel0, VerdictLabel1, VerdictLabel2, VerdictLabel3, VerdictLabel4, VerdictLabel5];
+            _scoreLabels = [ScoreLabel0, ScoreLabel1, ScoreLabel2, ScoreLabel3, ScoreLabel4, ScoreLabel5];
+            _camLabels = [CamLabel0, CamLabel1, CamLabel2, CamLabel3, CamLabel4, CamLabel5];
 
             _clockTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
             _clockTimer.Tick += (_, _) => DateTimeText.Text = DateTime.Now.ToString("yyyy-MM-dd  HH:mm:ss");
@@ -463,27 +465,30 @@ namespace RoboViz
         {
             Btn2Cam.IsChecked = false;
             Btn4Cam.IsChecked = true;
-            SetCameraMode(4);
+            SetCameraMode(6);
         }
 
         private void SetCameraMode(int count)
         {
-            _activeFrameCount = count;
-            bool show4 = count == 4;
-            CamBorder2.Visibility = show4 ? Visibility.Visible : Visibility.Collapsed;
-            CamBorder3.Visibility = show4 ? Visibility.Visible : Visibility.Collapsed;
-            BottomCamRow.Height = show4 ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
+            _activeFrameCount = Math.Clamp(count, 1, FrameCount);
 
-            if (!show4)
+            if (_camBorders == null || _verdictLabels == null || _scoreLabels == null)
+                return;
+
+            for (int i = 0; i < FrameCount; i++)
             {
-                _verdictLabels[2].Text = "";
-                _verdictLabels[3].Text = "";
+                _camBorders[i].Visibility = i < _activeFrameCount ? Visibility.Visible : Visibility.Collapsed;
+                if (i >= _activeFrameCount)
+                {
+                    _verdictLabels[i].Text = "";
+                    _scoreLabels[i].Text = "";
+                }
             }
         }
 
         private void UpdateCameraLabels()
         {
-        if (_camLabels == null) return;
+            if (_camLabels == null) return;
             for (int i = 0; i < FrameCount; i++)
             {
                 var cfg = _cameraSlots[i];
@@ -494,36 +499,38 @@ namespace RoboViz
 
         private static CameraSlotConfig[] LoadOrDefaultSlots()
         {
-            var saved = CameraSlotConfig.Load();
-            CameraSlotConfig[] cfgs = saved is { Length: 4 }
-                ? saved
-                :
-                [
-                    new() { Slot = 0, TriggerGroup = 1, Detector = "MaskRCNN", CaptureDelayMs = 50 },
-                    new() { Slot = 1, TriggerGroup = 2, Detector = "MaskRCNN", CaptureDelayMs = 50 },
-                    new() { Slot = 2, TriggerGroup = 2, Detector = "MaskRCNN", SkipGeoMeasurement = true, CaptureDelayMs = 50 },
-                    new() { Slot = 3, TriggerGroup = 2, Detector = "MaskRCNN", SkipGeoMeasurement = true, CaptureDelayMs = 50 },
-                ];
-
-            // Normalize slot-position invariants regardless of what an older
-            // camera_slots.json on disk says:
-            //   • slots 0/1 ALWAYS run geometric measurement (cam1 OpenCV / cam2 YOLO)
-            //   • slots 2/3 are side-view cameras with no visible hole — resize-only,
-            //     no geometric measurement under any circumstance.
-            //   • Detector is always MaskRCNN.
-            for (int i = 0; i < cfgs.Length; i++)
+            var defaults = new CameraSlotConfig[]
             {
+                new() { Slot = 0, TriggerGroup = 1, Detector = "MaskRCNN", CaptureDelayMs = 50, SkipGeoMeasurement = false },
+                new() { Slot = 1, TriggerGroup = 2, Detector = "MaskRCNN", CaptureDelayMs = 50, SkipGeoMeasurement = false },
+                new() { Slot = 2, TriggerGroup = 2, Detector = "MaskRCNN", CaptureDelayMs = 50, SkipGeoMeasurement = true },
+                new() { Slot = 3, TriggerGroup = 2, Detector = "MaskRCNN", CaptureDelayMs = 50, SkipGeoMeasurement = true },
+                new() { Slot = 4, TriggerGroup = 2, Detector = "MaskRCNN", CaptureDelayMs = 50, SkipGeoMeasurement = true },
+                new() { Slot = 5, TriggerGroup = 2, Detector = "MaskRCNN", CaptureDelayMs = 50, SkipGeoMeasurement = true },
+            };
+
+            var saved = CameraSlotConfig.Load();
+            var cfgs = new CameraSlotConfig[FrameCount];
+
+            for (int i = 0; i < FrameCount; i++)
+            {
+                if (saved != null && i < saved.Length)
+                    cfgs[i] = saved[i];
+                else
+                    cfgs[i] = defaults[i];
+
                 cfgs[i].Slot = i;
                 cfgs[i].Detector = "MaskRCNN";
                 cfgs[i].SkipGeoMeasurement = (i >= 2);
             }
+
             return cfgs;
         }
 
         private void UpdateCameraConfigSummary()
         {
             var lines = new List<string>();
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < FrameCount; i++)
             {
                 var cfg = _cameraSlots[i];
                 string dev = cfg.DeviceIndex >= 0 ? $"dev {cfg.DeviceIndex}" : "none";

@@ -90,13 +90,33 @@ public class InspectionService : IDisposable
 
         if (geoResult == null)
         {
-            geoVerdict = "ERROR";
+            // Contour detection failed — component is cut, missing, or out of frame.
+            // Fail-safe: REJECT so nothing slips through as PASS.
+            geoVerdict = "REJECT";
             return new InspectionResult
             {
-                Verdict = "ERROR",
+                Verdict = "REJECT",
                 TotalMs = totalSw.ElapsedMilliseconds,
                 GeoMs = geoMs,
-                ErrorMessage = "Could not detect o-ring contours",
+                ErrorMessage = "Contour detection failed - component cut, missing, or out of frame",
+                FailReasons = ["Contour detection failed"],
+                OverlayImage = rawImage,
+            };
+        }
+
+        // Reject if the outer contour touches the image boundary.
+        // A cut O-ring produces a clipped partial contour whose geometry metrics are unreliable.
+        if (geoResult.OuterContour != null &&
+            OringMeasurement.IsContourClipped(geoResult.OuterContour, rawImage.Width, rawImage.Height))
+        {
+            geoVerdict = "REJECT";
+            return new InspectionResult
+            {
+                Verdict = "REJECT",
+                TotalMs = totalSw.ElapsedMilliseconds,
+                GeoMs = geoMs,
+                ErrorMessage = "O-ring boundary clipped at image edge",
+                FailReasons = ["Component boundary cut at frame edge"],
                 OverlayImage = rawImage,
             };
         }
