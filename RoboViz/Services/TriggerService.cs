@@ -22,7 +22,7 @@ public class TriggerService : IDisposable
     private readonly TriggerConfig _config;
     private readonly CameraSlotConfig[] _cameraSlots;
     private readonly Action<TriggerResultEvent> _onResult;
-    private readonly FrameLoggingService? _frameLogger;
+    private readonly AsyncFrameLogDispatcher? _frameLogger;
 
     // One queue + one consumer per trigger group, so groups process in parallel.
     private readonly Dictionary<int, BlockingCollection<TriggerEvent>> _queues = [];
@@ -54,7 +54,7 @@ public class TriggerService : IDisposable
         _config = config;
         _cameraSlots = cameraSlots;
         _onResult = onResult;
-        _frameLogger = config.FrameLogging?.Enabled == true ? new FrameLoggingService(config.FrameLogging) : null;
+        _frameLogger = config.FrameLogging?.Enabled == true ? new AsyncFrameLogDispatcher(config.FrameLogging) : null;
         _ = onPollStatus; // Poll callback retained in the public signature for backward compatibility.
 
         string camStatus = cameras == null ? "NULL" : (cameras.IsStreaming ? "streaming" : "initialized");
@@ -515,12 +515,10 @@ public class TriggerService : IDisposable
         for (int i = 0; i < results.Length && i < frames.Count && i < slots.Count; i++)
         {
             string verdict = results[i].Verdict ?? "UNKNOWN";
-            if (!_frameLogger.ShouldSave(verdict))
-                continue;
-
-            string? path = _frameLogger.SaveFrame(frames[i], slots[i], verdict);
-            if (!string.IsNullOrEmpty(path))
-                Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 4 — Defect frame saved: {path}");
+            Bitmap imageForLog = results[i].OverlayImage ?? frames[i];
+            bool queued = _frameLogger.Enqueue(imageForLog, slots[i], verdict);
+            if (queued)
+                Debug.WriteLine($"[Pipeline-G{triggerGroup}] STAGE 4 — Defect log queued for CAM {slots[i] + 1}, verdict={verdict}");
         }
     }
 

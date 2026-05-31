@@ -5,3 +5,7 @@ RoboViz/Assets/*.onnx
 .vs/
 RoboViz/MvCameraControlNet_V2
 RoboViz/Assets/background.bmp
+
+# Runtime inspection image logs
+logs/
+**/logs/

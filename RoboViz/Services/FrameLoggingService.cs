@@ -34,13 +34,18 @@ public sealed class FrameLoggingService : IDisposable
 
     public string? SaveFrame(Bitmap frame, int slot, string verdict)
     {
+        return SaveFrame(frame, slot, verdict, _logsDirectory);
+    }
+
+    public string? SaveFrame(Bitmap frame, int slot, string verdict, string targetDirectory)
+    {
         if (frame == null) return null;
 
         try
         {
             lock (_lock)
             {
-                Directory.CreateDirectory(_logsDirectory);
+                Directory.CreateDirectory(targetDirectory);
 
                 string ext = string.Equals(_config.ImageFormat, "png", StringComparison.OrdinalIgnoreCase)
                     ? "png"
@@ -48,7 +53,7 @@ public sealed class FrameLoggingService : IDisposable
                 string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
                 int seq = Interlocked.Increment(ref _sequence);
                 string fileName = $"{timestamp}_{seq:D3}_cam{slot + 1}_{verdict}.{ext}";
-                string fullPath = Path.Combine(_logsDirectory, fileName);
+                string fullPath = Path.Combine(targetDirectory, fileName);
 
                 if (ext == "png")
                 {
@@ -76,6 +81,29 @@ public sealed class FrameLoggingService : IDisposable
         catch (Exception ex)
         {
             Debug.WriteLine($"[FrameLog] Save failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    public string? SaveMaskForFrame(Bitmap mask, string framePath)
+    {
+        if (mask == null || string.IsNullOrWhiteSpace(framePath))
+            return null;
+
+        try
+        {
+            lock (_lock)
+            {
+                string directory = Path.GetDirectoryName(framePath) ?? _logsDirectory;
+                string baseName = Path.GetFileNameWithoutExtension(framePath);
+                string maskPath = Path.Combine(directory, $"{baseName}_mask.png");
+                mask.Save(maskPath, ImageFormat.Png);
+                return maskPath;
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[FrameLog] Mask save failed: {ex.Message}");
             return null;
         }
     }

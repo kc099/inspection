@@ -14,7 +14,9 @@
     "Enabled": true,
     "SaveDefectsOnly": true,
     "LogsDirectory": "logs",
-    "ImageFormat": "jpg"
+    "ImageFormat": "jpg",
+    "SavePredictedMask": true,
+    "QueueCapacity": 256
   },
   "OutputCoils": {
     "Cam1_ReworkCoil": 4001,

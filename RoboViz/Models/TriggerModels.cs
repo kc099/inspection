@@ -239,4 +239,6 @@ public class FrameLoggingConfig
     public bool SaveDefectsOnly { get; set; } = true;
     public string LogsDirectory { get; set; } = "logs";
     public string ImageFormat { get; set; } = "jpg";
+    public bool SavePredictedMask { get; set; } = true;
+    public int QueueCapacity { get; set; } = 256;
 }

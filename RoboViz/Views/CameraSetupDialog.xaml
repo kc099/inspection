@@ -130,7 +130,7 @@
                 <!-- CAM 1 -->
                 <TextBlock Grid.Row="2" Grid.Column="0" Text="CAM 1" Style="{StaticResource SlotLabel}" Margin="0,6,0,0"/>
                 <ComboBox  Grid.Row="2" Grid.Column="1" x:Name="CmbCam0" Style="{StaticResource SlotCombo}" Margin="4,6,4,0"/>
-                <TextBlock Grid.Row="2" Grid.Column="2" Text="MaskRCNN" Style="{StaticResource SlotRadio}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                <TextBlock Grid.Row="2" Grid.Column="2" Text="MaskRCNN" Style="{StaticResource HeaderLabel}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
                 <StackPanel Grid.Row="2" Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
                     <RadioButton x:Name="Trig1_0" Content="T1" GroupName="Trig0" IsChecked="True" Style="{StaticResource SlotRadio}"/>
                     <RadioButton x:Name="Trig2_0" Content="T2" GroupName="Trig0" Style="{StaticResource SlotRadio}"/>
@@ -144,7 +144,7 @@
                 <!-- CAM 2 -->
                 <TextBlock Grid.Row="3" Grid.Column="0" Text="CAM 2" Style="{StaticResource SlotLabel}" Margin="0,6,0,0"/>
                 <ComboBox  Grid.Row="3" Grid.Column="1" x:Name="CmbCam1" Style="{StaticResource SlotCombo}" Margin="4,6,4,0"/>
-                <TextBlock Grid.Row="3" Grid.Column="2" Text="MaskRCNN" Style="{StaticResource SlotRadio}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                <TextBlock Grid.Row="3" Grid.Column="2" Text="MaskRCNN" Style="{StaticResource HeaderLabel}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
                 <StackPanel Grid.Row="3" Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
                     <RadioButton x:Name="Trig1_1" Content="T1" GroupName="Trig1" Style="{StaticResource SlotRadio}"/>
                     <RadioButton x:Name="Trig2_1" Content="T2" GroupName="Trig1" IsChecked="True" Style="{StaticResource SlotRadio}"/>
@@ -158,7 +158,7 @@
                 <!-- CAM 3 -->
                 <TextBlock Grid.Row="4" Grid.Column="0" Text="CAM 3" Style="{StaticResource SlotLabel}" Margin="0,6,0,0"/>
                 <ComboBox  Grid.Row="4" Grid.Column="1" x:Name="CmbCam2" Style="{StaticResource SlotCombo}" Margin="4,6,4,0"/>
-                <TextBlock Grid.Row="4" Grid.Column="2" Text="MaskRCNN" Style="{StaticResource SlotRadio}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                <TextBlock Grid.Row="4" Grid.Column="2" Text="MaskRCNN" Style="{StaticResource HeaderLabel}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
                 <StackPanel Grid.Row="4" Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
                     <RadioButton x:Name="Trig1_2" Content="T1" GroupName="Trig2" Style="{StaticResource SlotRadio}"/>
                     <RadioButton x:Name="Trig2_2" Content="T2" GroupName="Trig2" IsChecked="True" Style="{StaticResource SlotRadio}"/>
@@ -172,7 +172,7 @@
                 <!-- CAM 4 -->
                 <TextBlock Grid.Row="5" Grid.Column="0" Text="CAM 4" Style="{StaticResource SlotLabel}" Margin="0,6,0,0"/>
                 <ComboBox  Grid.Row="5" Grid.Column="1" x:Name="CmbCam3" Style="{StaticResource SlotCombo}" Margin="4,6,4,0"/>
-                <TextBlock Grid.Row="5" Grid.Column="2" Text="MaskRCNN" Style="{StaticResource SlotRadio}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                <TextBlock Grid.Row="5" Grid.Column="2" Text="MaskRCNN" Style="{StaticResource HeaderLabel}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
                 <StackPanel Grid.Row="5" Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
                     <RadioButton x:Name="Trig1_3" Content="T1" GroupName="Trig3" Style="{StaticResource SlotRadio}"/>
                     <RadioButton x:Name="Trig2_3" Content="T2" GroupName="Trig3" IsChecked="True" Style="{StaticResource SlotRadio}"/>
@@ -186,7 +186,7 @@
                 <!-- CAM 5 -->
                 <TextBlock Grid.Row="6" Grid.Column="0" Text="CAM 5" Style="{StaticResource SlotLabel}" Margin="0,6,0,0"/>
                 <ComboBox  Grid.Row="6" Grid.Column="1" x:Name="CmbCam4" Style="{StaticResource SlotCombo}" Margin="4,6,4,0"/>
-                <TextBlock Grid.Row="6" Grid.Column="2" Text="MaskRCNN" Style="{StaticResource SlotRadio}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                <TextBlock Grid.Row="6" Grid.Column="2" Text="MaskRCNN" Style="{StaticResource HeaderLabel}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
                 <StackPanel Grid.Row="6" Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
                     <RadioButton x:Name="Trig1_4" Content="T1" GroupName="Trig4" Style="{StaticResource SlotRadio}"/>
                     <RadioButton x:Name="Trig2_4" Content="T2" GroupName="Trig4" IsChecked="True" Style="{StaticResource SlotRadio}"/>
@@ -200,7 +200,7 @@
                 <!-- CAM 6 -->
                 <TextBlock Grid.Row="7" Grid.Column="0" Text="CAM 6" Style="{StaticResource SlotLabel}" Margin="0,6,0,0"/>
                 <ComboBox  Grid.Row="7" Grid.Column="1" x:Name="CmbCam5" Style="{StaticResource SlotCombo}" Margin="4,6,4,0"/>
-                <TextBlock Grid.Row="7" Grid.Column="2" Text="MaskRCNN" Style="{StaticResource SlotRadio}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                <TextBlock Grid.Row="7" Grid.Column="2" Text="MaskRCNN" Style="{StaticResource HeaderLabel}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
                 <StackPanel Grid.Row="7" Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
                     <RadioButton x:Name="Trig1_5" Content="T1" GroupName="Trig5" Style="{StaticResource SlotRadio}"/>
                     <RadioButton x:Name="Trig2_5" Content="T2" GroupName="Trig5" IsChecked="True" Style="{StaticResource SlotRadio}"/>

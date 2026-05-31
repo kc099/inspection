@@ -22,6 +22,7 @@ namespace RoboViz
         private OutputCommunicationService? _outputService;
         private TriggerConfig? _triggerConfig;
         private Bitmap? _currentImage;
+        private string? _currentImagePath;
         private CameraManager? _cameraManager;
         private bool _isStreaming;
 
@@ -399,7 +400,7 @@ namespace RoboViz
                         BtnTriggerStop.IsEnabled = true;
                         string transportStatus = string.Equals(config.CommunicationMode, "http", StringComparison.OrdinalIgnoreCase)
                             ? "HTTP outputs"
-                            : ( _modbus?.IsConnected == true ? $"{config.ComPort} @ {config.BaudRate}" : "modbus outputs" );
+                            : (_modbus?.IsConnected == true ? $"{config.ComPort} @ {config.BaudRate}" : "modbus outputs");
                         TriggerStatusText.Text = $"Running [HW TRIGGER] — {transportStatus} | waiting for camera-triggered frames...";
                         TriggerStatusText.Foreground = ReadyGreen;
 
@@ -667,6 +668,7 @@ namespace RoboViz
             {
                 _currentImage?.Dispose();
                 _currentImage = new Bitmap(dlg.FileName);
+                _currentImagePath = dlg.FileName;
 
                 var source = InspectionService.BitmapToBitmapSource(_currentImage);
                 foreach (var img in _imageDisplays)
@@ -683,6 +685,9 @@ namespace RoboViz
                 PopulateMetricsTable();
                 DetailsText.Text = $"Loaded: {Path.GetFileName(dlg.FileName)}  " +
                                    $"({_currentImage.Width}x{_currentImage.Height})  x{_activeFrameCount} frames";
+
+                if (_service != null)
+                    Analyze_Click(sender, e);
             }
         }
 
@@ -784,48 +789,105 @@ namespace RoboViz
 
             // Snapshot per-camera detector assignments for the background task
             var slotConfigs = _cameraSlots.ToArray();
+            string? manualLogDir = useCamera ? null : GetManualLogDirectory();
+            var frameLogCfg = EnsureTriggerConfig().FrameLogging ?? new FrameLoggingConfig();
+            string appLogDir = GetAppLogDirectory(frameLogCfg);
+            using var manualLogger = new AsyncFrameLogDispatcher(frameLogCfg);
 
-            await Task.Run(() =>
+            try
             {
-                Bitmap[] copies;
-                if (useCamera)
+                await Task.Run(() =>
                 {
-                    var frames = _cameraManager!.GetAllLatestFrames();
-                    copies = new Bitmap[frameCount];
-                    for (int i = 0; i < frameCount; i++)
-                        copies[i] = (i < frames.Length && frames[i] != null)
-                            ? new Bitmap(frames[i]!)
-                            : new Bitmap(720, 720);
-                }
-                else
-                {
-                    copies = new Bitmap[frameCount];
-                    for (int i = 0; i < frameCount; i++)
-                        copies[i] = new Bitmap(_currentImage!);
-                }
+                    Bitmap[] copies;
+                    if (useCamera)
+                    {
+                        var frames = _cameraManager!.GetAllLatestFrames();
+                        copies = new Bitmap[frameCount];
+                        for (int i = 0; i < frameCount; i++)
+                            copies[i] = (i < frames.Length && frames[i] != null)
+                                ? new Bitmap(frames[i]!)
+                                : new Bitmap(720, 720);
+                    }
+                    else
+                    {
+                        copies = new Bitmap[frameCount];
+                        for (int i = 0; i < frameCount; i++)
+                            copies[i] = new Bitmap(_currentImage!);
+                    }
 
-                var batchSw = Stopwatch.StartNew();
-                Parallel.For(0, frameCount, i =>
-                {
-                    string detector = slotConfigs[i].Detector;
-                    bool skipGeo = slotConfigs[i].SkipGeoMeasurement;
-                    // Use the camera's configured physical slot so the geometric method
-                    // selection (Measure vs MeasureCam2) matches the trigger path.
-                    results[i] = _service.InspectMaskRCNN(copies[i], slotConfigs[i].TriggerGroup, skipGeo, slot: slotConfigs[i].Slot);
+                    var batchSw = Stopwatch.StartNew();
+                    Parallel.For(0, frameCount, i =>
+                    {
+                        string detector = slotConfigs[i].Detector;
+                        bool skipGeo = slotConfigs[i].SkipGeoMeasurement;
+                        // Use the camera's configured physical slot so the geometric method
+                        // selection (Measure vs MeasureCam2) matches the trigger path.
+                        results[i] = _service.InspectMaskRCNN(copies[i], slotConfigs[i].TriggerGroup, skipGeo, slot: slotConfigs[i].Slot);
+                    });
+                    batchMs = batchSw.ElapsedMilliseconds;
+
+                    if (!useCamera)
+                    {
+                        var logDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        if (!string.IsNullOrWhiteSpace(manualLogDir))
+                            logDirs.Add(manualLogDir!);
+                        if (!string.IsNullOrWhiteSpace(appLogDir))
+                            logDirs.Add(appLogDir);
+
+                        SaveManualDefectLogs(copies, results, slotConfigs, manualLogger, logDirs.ToArray());
+                    }
+
+                    for (int i = 0; i < frameCount; i++)
+                    {
+                        if (!ReferenceEquals(copies[i], results[i].OverlayImage))
+                            copies[i].Dispose();
+                    }
                 });
-                batchMs = batchSw.ElapsedMilliseconds;
 
-                for (int i = 0; i < frameCount; i++)
-                {
-                    if (!ReferenceEquals(copies[i], results[i].OverlayImage))
-                        copies[i].Dispose();
-                }
-            });
+                UpdateAnalysisResults(results, batchMs);
+                StatusText.Text = $"Model: ready  [{_service!.ActiveProvider}]  ({_service.CurrentModel})";
+            }
+            finally
+            {
+                BtnAnalyze.IsEnabled = true;
+            }
+        }
 
-            UpdateAnalysisResults(results, batchMs);
+        private string? GetManualLogDirectory()
+        {
+            if (string.IsNullOrWhiteSpace(_currentImagePath))
+                return null;
 
-            StatusText.Text = $"Model: ready  [{_service!.ActiveProvider}]  ({_service.CurrentModel})";
-            BtnAnalyze.IsEnabled = true;
+            string? directory = Path.GetDirectoryName(_currentImagePath);
+            if (string.IsNullOrWhiteSpace(directory))
+                return null;
+
+            return Path.Combine(directory, "logs");
+        }
+
+        private static string GetAppLogDirectory(FrameLoggingConfig config)
+        {
+            string configuredPath = string.IsNullOrWhiteSpace(config.LogsDirectory) ? "logs" : config.LogsDirectory;
+            return Path.IsPathRooted(configuredPath)
+                ? configuredPath
+                : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, configuredPath);
+        }
+
+        private static void SaveManualDefectLogs(
+            Bitmap[] copies,
+            InspectionResult[] results,
+            CameraSlotConfig[] slotConfigs,
+            AsyncFrameLogDispatcher logger,
+            string[] targetDirs)
+        {
+            for (int i = 0; i < results.Length && i < copies.Length && i < slotConfigs.Length; i++)
+            {
+                string verdict = results[i].Verdict ?? "UNKNOWN";
+                Bitmap imageForLog = results[i].OverlayImage ?? copies[i];
+                bool queued = logger.Enqueue(imageForLog, slotConfigs[i].Slot, verdict, targetDirs);
+                if (queued)
+                    Debug.WriteLine($"[Analyze] Manual defect log queued: CAM {slotConfigs[i].Slot + 1}, verdict={verdict}");
+            }
         }
 
         private void UpdateAnalysisResults(InspectionResult[] results, long batchMs)
@@ -843,13 +905,10 @@ namespace RoboViz
                 _scoreLabels[i].Text = "";
             }
 
-            // Show READY in the banner (per-cam verdicts stay on each image tile)
             VerdictText.Text = "READY";
             VerdictText.Foreground = ReadyGreen;
             VerdictBorder.Background = VerdictNeutralBg;
 
-            // Metric panel: show CAM 1 (slot 0) in "Value 1" and CAM 2 (slot 1) in "Value 2".
-            // Slots 2/3 are skip-geo so they have no MetricResults to display here.
             List<MetricEvalResult>? cam1 = null, cam2 = null;
             for (int i = 0; i < count; i++)
             {
@@ -869,13 +928,9 @@ namespace RoboViz
             }
             CycleTimeText.Text = timing.ToString();
 
-            // Write manual output coils using trigger_config.json.
-            // Also mirror READY handshake behavior used by TriggerService:
-            // READY=0 while processing manual output writes, READY=1 when done.
             var outputs = EnsureOutputService();
             var oc = EnsureTriggerConfig().OutputCoils;
 
-            // Build slot→verdict map
             var verdicts = new Dictionary<int, string>();
             for (int i = 0; i < count; i++)
                 verdicts[i] = results[i].Verdict;
@@ -898,7 +953,6 @@ namespace RoboViz
                     if (group1Used) SetManualReadyOutput(outputs, OutputChannel.ReadyT1, ready: false, "T1");
                     if (group2Used) SetManualReadyOutput(outputs, OutputChannel.ReadyT2, ready: false, "T2");
 
-                    // Sensor 3001 logic: CAM 1 (slot 0)
                     verdicts.TryGetValue(0, out string? cam1V);
                     Debug.WriteLine($"[Analyze] CAM 1 verdict: '{cam1V}'");
                     if (cam1V == "REWORK")
@@ -920,7 +974,6 @@ namespace RoboViz
                         Debug.WriteLine($"[Analyze] CAM 1 PASS or null -> no output");
                     }
 
-                    // Sensor 3002 logic: CAM 2 (slot 1, top), CAM 3 (slot 2, side), CAM 4 (slot 3, side)
                     verdicts.TryGetValue(1, out string? cam2V);
                     verdicts.TryGetValue(2, out string? cam3V);
                     verdicts.TryGetValue(3, out string? cam4V);
@@ -1200,7 +1253,7 @@ namespace RoboViz
 
             string modbusInfo = evt.ModbusWriteOk
                 ? $"coils: {evt.CoilsActivated}"
-                : (evt.CoilsActivated != null ? $"coil error: {evt.ModbusError}" : (evt.ModbusError ?? "no coil needed"));
+                : (evt.CoilsActivated != null ? $"coil error: {evt.ModbusError}" : "no coil needed");
             string verdicts = string.Join("/", evt.Results.Select(r => r.Verdict));
             TriggerStatusText.Text =
                 $"{pair}: {verdicts} | {evt.BatchMs}ms | {modbusInfo}";
